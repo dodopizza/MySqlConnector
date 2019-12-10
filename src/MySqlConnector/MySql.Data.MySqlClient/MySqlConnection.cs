@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Net.Sockets;
 using System.Security.Authentication;
@@ -283,52 +284,75 @@ namespace MySql.Data.MySqlClient
 
 		private async Task OpenAsync(IOBehavior? ioBehavior, CancellationToken cancellationToken)
 		{
-			VerifyNotDisposed();
-			if (State != ConnectionState.Closed)
-				throw new InvalidOperationException("Cannot Open when State is {0}.".FormatInvariant(State));
-
-			SetState(ConnectionState.Connecting);
-
-			var pool = ConnectionPool.GetPool(m_connectionString);
-			m_connectionSettings ??= pool?.ConnectionSettings ?? new ConnectionSettings(new MySqlConnectionStringBuilder(m_connectionString));
-
-#if !NETSTANDARD1_3
-			// check if there is an open session (in the current transaction) that can be adopted
-			if (m_connectionSettings.AutoEnlist && System.Transactions.Transaction.Current is object)
-			{
-				var existingConnection = FindExistingEnlistedSession(System.Transactions.Transaction.Current);
-				if (existingConnection is object)
-				{
-					TakeSessionFrom(existingConnection);
-					m_hasBeenOpened = true;
-					SetState(ConnectionState.Open);
-					return;
-				}
-			}
-#endif
-
+			var operationId = s_diagnosticListener.WriteConnectionOpenBefore(this);
+			Exception? e = null;
 			try
 			{
-				m_session = await CreateSessionAsync(pool, ioBehavior, cancellationToken).ConfigureAwait(false);
+				VerifyNotDisposed();
+				if (State != ConnectionState.Closed)
+					throw new InvalidOperationException("Cannot Open when State is {0}.".FormatInvariant(State));
 
-				m_hasBeenOpened = true;
-				SetState(ConnectionState.Open);
-			}
-			catch (MySqlException)
-			{
-				SetState(ConnectionState.Closed);
-				throw;
-			}
-			catch (SocketException ex)
-			{
-				SetState(ConnectionState.Closed);
-				throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Unable to connect to any of the specified MySQL hosts.", ex);
-			}
+				SetState(ConnectionState.Connecting);
+
+				var pool = ConnectionPool.GetPool(m_connectionString);
+				m_connectionSettings ??= pool?.ConnectionSettings ??
+				                         new ConnectionSettings(new MySqlConnectionStringBuilder(m_connectionString));
 
 #if !NETSTANDARD1_3
-			if (m_connectionSettings.AutoEnlist && System.Transactions.Transaction.Current is object)
-				EnlistTransaction(System.Transactions.Transaction.Current);
+				// check if there is an open session (in the current transaction) that can be adopted
+				if (m_connectionSettings.AutoEnlist && System.Transactions.Transaction.Current is object)
+				{
+					var existingConnection = FindExistingEnlistedSession(System.Transactions.Transaction.Current);
+					if (existingConnection is object)
+					{
+						TakeSessionFrom(existingConnection);
+						m_hasBeenOpened = true;
+						SetState(ConnectionState.Open);
+						return;
+					}
+				}
 #endif
+
+				try
+				{
+					m_session = await CreateSessionAsync(pool, ioBehavior, cancellationToken).ConfigureAwait(false);
+
+					m_hasBeenOpened = true;
+					SetState(ConnectionState.Open);
+				}
+				catch (MySqlException)
+				{
+					SetState(ConnectionState.Closed);
+					throw;
+				}
+				catch (SocketException ex)
+				{
+					SetState(ConnectionState.Closed);
+					throw new MySqlException(MySqlErrorCode.UnableToConnectToHost,
+						"Unable to connect to any of the specified MySQL hosts.", ex);
+				}
+
+#if !NETSTANDARD1_3
+				if (m_connectionSettings.AutoEnlist && System.Transactions.Transaction.Current is object)
+					EnlistTransaction(System.Transactions.Transaction.Current);
+#endif
+			}
+			catch (Exception ex)
+			{
+				e = ex;
+				throw;
+			}
+			finally
+			{
+				if (e != null)
+				{
+					s_diagnosticListener.WriteConnectionOpenError(operationId, this, e);
+				}
+				else
+				{
+					s_diagnosticListener.WriteConnectionOpenAfter(operationId, this);
+				}
+			}
 		}
 
 		[AllowNull]
@@ -814,6 +838,7 @@ namespace MySql.Data.MySqlClient
 		static readonly object s_lock = new object();
 		static readonly Dictionary<System.Transactions.Transaction, List<EnlistedTransactionBase>> s_transactionConnections = new Dictionary<System.Transactions.Transaction, List<EnlistedTransactionBase>>();
 #endif
+		static readonly DiagnosticListener s_diagnosticListener = new DiagnosticListener(DiagnosticListenerExtensions.DiagnosticListenerName);
 
 		string m_connectionString;
 		ConnectionSettings? m_connectionSettings;
