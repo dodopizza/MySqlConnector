@@ -71,7 +71,7 @@ namespace MySqlConnector.Tests
 				(data) => data.ConnectionId == command.Connection?.ServerThread,
 				(data) => data.OperationId == operationId,
 				(data) => AlmostNow(data.Timestamp),
-				(data) => data.Statistics == null, //TODO: implement stats same as https://github.com/dotnet/runtime/blob/master/src/libraries/MySql.Data.MySqlClient/src/System/Data/SqlClient/SqlStatistics.cs
+				(data) => data.Statistics == null, //TODO: implement stats same as https://github.com/dotnet/runtime/blob/master/src/libraries/System.Data.SqlClient/src/System/Data/SqlClient/SqlStatistics.cs
 				(data) => data.Command == command));
 		}
 
@@ -133,7 +133,7 @@ namespace MySqlConnector.Tests
 				(data) => data.Connection == m_connection,
 				(data) => data.ConnectionId == m_connection?.ServerThread,
 				(data) => data.OperationId == operationId,
-				(data) => data.Statistics == null, //TODO: implement stats same as https://github.com/dotnet/runtime/blob/master/src/libraries/MySql.Data.MySqlClient/src/System/Data/SqlClient/SqlStatistics.cs
+				(data) => data.Statistics == null, //TODO: implement stats same as https://github.com/dotnet/runtime/blob/master/src/libraries/System.Data.SqlClient/src/System/Data/SqlClient/SqlStatistics.cs
 				(data) => AlmostNow(data.Timestamp)));
 		}
 
