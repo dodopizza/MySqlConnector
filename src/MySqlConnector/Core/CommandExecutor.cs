@@ -17,11 +17,8 @@ namespace MySqlConnector.Core
 	internal static class CommandExecutor
 	{
 
-		public static async Task<DbDataReader> ExecuteReaderAsync(IReadOnlyList<IMySqlCommand> commands, ICommandPayloadCreator payloadCreator, CommandBehavior behavior, IOBehavior ioBehavior, CancellationToken cancellationToken)
-		{
-			var operationId = DiagnosticListener.WriteCommandBefore(commands);
-			Exception? e = null;
-			try
+		public static Task<DbDataReader> ExecuteReaderAsync(IReadOnlyList<IMySqlCommand> commands, ICommandPayloadCreator payloadCreator, CommandBehavior behavior, IOBehavior ioBehavior, CancellationToken cancellationToken) =>
+			DiagnosticListener.WithDiagnosticForCommand<DbDataReader>(commands, async () =>
 			{
 				cancellationToken.ThrowIfCancellationRequested();
 				var commandListPosition = new CommandListPosition(commands);
@@ -44,7 +41,8 @@ namespace MySqlConnector.Core
 						if (!cachedProcedures.ContainsKey(commandText))
 						{
 							cachedProcedures.Add(commandText,
-								await connection.GetCachedProcedure(commandText, revalidateMissing: false, ioBehavior,
+								await connection.GetCachedProcedure(commandText, revalidateMissing: false,
+									ioBehavior,
 									cancellationToken).ConfigureAwait(false));
 
 							// because the connection was used to execute a MySqlDataReader with the connection's DefaultCommandTimeout,
@@ -81,7 +79,8 @@ namespace MySqlConnector.Core
 					throw new OperationCanceledException(cancellationToken);
 				}
 				catch (Exception ex) when (payload.Span.Length > 4_194_304 &&
-				                           (ex is SocketException || ex is IOException || ex is MySqlProtocolException))
+				                           (ex is SocketException || ex is IOException ||
+				                            ex is MySqlProtocolException))
 				{
 					// the default MySQL Server value for max_allowed_packet (in MySQL 5.7) is 4MiB: https://dev.mysql.com/doc/refman/5.7/en/server-system-variables.html#sysvar_max_allowed_packet
 					// use "decimal megabytes" (to round up) when creating the exception message
@@ -90,24 +89,7 @@ namespace MySqlConnector.Core
 						"Error submitting {0}MB packet; ensure 'max_allowed_packet' is greater than {0}MB."
 							.FormatInvariant(megabytes), ex);
 				}
-			}
-			catch (Exception ex)
-			{
-				e = ex;
-				throw;
-			}
-			finally
-			{
-				if (e != null)
-				{
-					DiagnosticListener.WriteCommandError(operationId, commands, e);
-				}
-				else
-				{
-					DiagnosticListener.WriteCommandAfter(operationId, commands);
-				}
-			}
-		}
+			});
 
 		static readonly IMySqlConnectorLogger Log = MySqlConnectorLogManager.CreateLogger(nameof(CommandExecutor));
 		static readonly DiagnosticListener DiagnosticListener = new DiagnosticListener(DiagnosticListenerExtensions.DiagnosticListenerName);

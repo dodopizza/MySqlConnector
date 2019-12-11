@@ -282,12 +282,10 @@ namespace MySql.Data.MySqlClient
 
 		public override Task OpenAsync(CancellationToken cancellationToken) => OpenAsync(default, cancellationToken);
 
-		private async Task OpenAsync(IOBehavior? ioBehavior, CancellationToken cancellationToken)
-		{
-			var operationId = s_diagnosticListener.WriteConnectionOpenBefore(this);
-			Exception? e = null;
-			try
+		private Task OpenAsync(IOBehavior? ioBehavior, CancellationToken cancellationToken) =>
+			s_diagnosticListener.WithDiagnosticForConnectionOpen(this, async () =>
 			{
+
 				VerifyNotDisposed();
 				if (State != ConnectionState.Closed)
 					throw new InvalidOperationException("Cannot Open when State is {0}.".FormatInvariant(State));
@@ -296,7 +294,8 @@ namespace MySql.Data.MySqlClient
 
 				var pool = ConnectionPool.GetPool(m_connectionString);
 				m_connectionSettings ??= pool?.ConnectionSettings ??
-				                         new ConnectionSettings(new MySqlConnectionStringBuilder(m_connectionString));
+				                         new ConnectionSettings(
+					                         new MySqlConnectionStringBuilder(m_connectionString));
 
 #if !NETSTANDARD1_3
 				// check if there is an open session (in the current transaction) that can be adopted
@@ -336,24 +335,7 @@ namespace MySql.Data.MySqlClient
 				if (m_connectionSettings.AutoEnlist && System.Transactions.Transaction.Current is object)
 					EnlistTransaction(System.Transactions.Transaction.Current);
 #endif
-			}
-			catch (Exception ex)
-			{
-				e = ex;
-				throw;
-			}
-			finally
-			{
-				if (e != null)
-				{
-					s_diagnosticListener.WriteConnectionOpenError(operationId, this, e);
-				}
-				else
-				{
-					s_diagnosticListener.WriteConnectionOpenAfter(operationId, this);
-				}
-			}
-		}
+			});
 
 		[AllowNull]
 		public override string ConnectionString
@@ -705,33 +687,35 @@ namespace MySql.Data.MySqlClient
 				throw new ObjectDisposedException(GetType().Name);
 		}
 
-		private Task CloseAsync(bool changeState, IOBehavior ioBehavior)
-		{
-			if (m_connectionState == ConnectionState.Closed)
-				return Utility.CompletedTask;
-
-			// check fast path
-			if (m_activeReader is null &&
-				CurrentTransaction is null &&
-#if !NETSTANDARD1_3
-				m_enlistedTransaction is null &&
-#endif
-				(m_connectionSettings?.Pooling ?? false))
+		private Task CloseAsync(bool changeState, IOBehavior ioBehavior) =>
+			s_diagnosticListener.WithDiagnosticForConnectionClose(this, async () =>
 			{
-				m_cachedProcedures = null;
-				if (m_session is object)
+				if (m_connectionState == ConnectionState.Closed)
+					return;
+
+				// check fast path
+				if (m_activeReader is null &&
+				    CurrentTransaction is null &&
+#if !NETSTANDARD1_3
+				    m_enlistedTransaction is null &&
+#endif
+				    (m_connectionSettings?.Pooling ?? false))
 				{
-					m_session.ReturnToPool();
-					m_session = null;
+					m_cachedProcedures = null;
+					if (m_session is object)
+					{
+						m_session.ReturnToPool();
+						m_session = null;
+					}
+
+					if (changeState)
+						SetState(ConnectionState.Closed);
+
+					return;
 				}
-				if (changeState)
-					SetState(ConnectionState.Closed);
 
-				return Utility.CompletedTask;
-			}
-
-			return DoCloseAsync(changeState, ioBehavior);
-		}
+				await DoCloseAsync(changeState, ioBehavior);
+			});
 
 		private async Task DoCloseAsync(bool changeState, IOBehavior ioBehavior)
 		{

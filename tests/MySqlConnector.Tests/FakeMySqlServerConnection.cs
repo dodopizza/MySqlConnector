@@ -61,7 +61,6 @@ namespace MySqlConnector.Tests
 						case CommandKind.ResetConnection:
 							await SendAsync(stream, 1, WriteOk);
 							break;
-
 						case CommandKind.Query:
 							var query = Encoding.UTF8.GetString(bytes, 1, bytes.Length - 1);
 							Match match;
@@ -81,6 +80,18 @@ namespace MySqlConnector.Tests
 								await SendAsync(stream, 3, x => x.Write(new byte[] { 0xFE, 0, 0, 2, 0 })); // EOF
 								await SendAsync(stream, 4, x => x.Write(data));
 								await SendAsync(stream, 5, x => x.Write(new byte[] { 0xFE, 0, 0, 2, 0 })); // EOF
+							}
+							else if ((Regex.Match(query, @"start transaction(;|$)")).Success)
+							{
+								await SendAsync(stream, 1, WriteOk);
+							}
+							else if ((Regex.Match(query, @"^commit(;|$)")).Success)
+							{
+								await SendAsync(stream, 1, WriteOk);
+							}
+							else if ((Regex.Match(query, @"^rollback(;|$)")).Success)
+							{
+								await SendAsync(stream, 1, WriteOk);
 							}
 							else
 							{

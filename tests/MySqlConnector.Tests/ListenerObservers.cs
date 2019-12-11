@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 
@@ -8,8 +9,8 @@ namespace MySqlConnector.Tests
 	{
 		private class ListenerObservers : IObserver<DiagnosticListener>, IDisposable
 		{
-			public List<(string name, KeyValuePair<string, object>)> Events { get; } = new List<(string name, KeyValuePair<string, object>)>();
-			private readonly List<IDisposable> m_subscriptions = new List<IDisposable>();
+			public ConcurrentQueue<(string name, KeyValuePair<string, object>)> Events { get; } = new ConcurrentQueue<(string name, KeyValuePair<string, object>)>();
+			private readonly ConcurrentQueue<IDisposable> m_subscriptions = new ConcurrentQueue<IDisposable>();
 			public void OnCompleted()
 			{
 			}
@@ -36,7 +37,7 @@ namespace MySqlConnector.Tests
 
 				public void OnNext(KeyValuePair<string, object> value)
 				{
-					m_parent.Events.Add((m_streamName, value));
+					m_parent.Events.Enqueue((m_streamName, value));
 				}
 			}
 
@@ -44,10 +45,7 @@ namespace MySqlConnector.Tests
 			{
 			}
 
-			public void OnNext(DiagnosticListener value)
-			{
-				m_subscriptions.Add(value.Subscribe(new EventObserver(this, value.Name)));
-			}
+			public void OnNext(DiagnosticListener value) => m_subscriptions.Enqueue(value.Subscribe(new EventObserver(this, value.Name)));
 
 			public void Dispose()
 			{
