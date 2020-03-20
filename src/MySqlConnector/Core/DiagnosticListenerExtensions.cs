@@ -44,7 +44,7 @@ namespace MySqlConnector.Core
 			Exception? e = null;
 			try
 			{
-				return await func();
+				return await func().ConfigureAwait(false);
 			}
 			catch (Exception ex)
 			{
@@ -138,7 +138,7 @@ namespace MySqlConnector.Core
 	        Exception? e = null;
 	        try
 	        {
-		        await func();
+		        await func().ConfigureAwait(false);
 	        }
 	        catch (Exception ex)
 	        {
@@ -227,7 +227,7 @@ namespace MySqlConnector.Core
 	        Exception? e = null;
 	        try
 	        {
-		        await func();
+		        await func().ConfigureAwait(false);
 	        }
 	        catch (Exception ex)
 	        {
@@ -321,7 +321,7 @@ namespace MySqlConnector.Core
 	        Exception? e = null;
 	        try
 	        {
-		        await func();
+		        await func().ConfigureAwait(false);
 	        }
 	        catch (Exception ex)
 	        {
@@ -411,7 +411,7 @@ namespace MySqlConnector.Core
 	        Exception? e = null;
 	        try
 	        {
-		        await func();
+		        await func().ConfigureAwait(false);
 	        }
 	        catch (Exception ex)
 	        {
