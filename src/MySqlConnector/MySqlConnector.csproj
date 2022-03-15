@@ -13,6 +13,7 @@
     <Nullable>enable</Nullable>
     <CheckEolTargetFramework>false</CheckEolTargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
+    <RepositoryUrl>https://github.com/dodopizza/MySqlConnector</RepositoryUrl>
   </PropertyGroup>
 
   <ItemGroup Condition=" '$(TargetFramework)' == 'net45' OR '$(TargetFramework)' == 'net461' OR '$(TargetFramework)' == 'net471' ">
@@ -38,7 +39,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="docs\README.md" Pack="true" PackagePath="\"/>
+    <None Include="docs\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

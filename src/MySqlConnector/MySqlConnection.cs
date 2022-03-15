@@ -394,40 +394,46 @@ public sealed class MySqlConnection : DbConnection, ICloneable
 			// check if there is an open session (in the current transaction) that can be adopted
 			if (m_connectionSettings.AutoEnlist && System.Transactions.Transaction.Current is not null)
 			{
-				var existingConnection = FindExistingEnlistedSession(System.Transactions.Transaction.Current);
-				if (existingConnection is not null)
+				using (ActivitySourceHelper.StartActivity("FindExistingEnlistedSession"))
 				{
-					TakeSessionFrom(existingConnection);
-					CopyActivityTags(m_session!, activity);
-					m_hasBeenOpened = true;
-					SetState(ConnectionState.Open);
-					return;
+					var existingConnection = FindExistingEnlistedSession(System.Transactions.Transaction.Current);
+					if (existingConnection is not null)
+					{
+						TakeSessionFrom(existingConnection);
+						CopyActivityTags(m_session!, activity);
+						m_hasBeenOpened = true;
+						SetState(ConnectionState.Open);
+						return;
+					}
 				}
 			}
 
-			try
+			using (var createSessionActivity = ActivitySourceHelper.StartActivity("CreateSessionAsync"))
 			{
-				m_session = await CreateSessionAsync(pool, openStartTickCount, ioBehavior, cancellationToken).ConfigureAwait(false);
-				CopyActivityTags(m_session, activity);
+				try
+				{
+					m_session = await CreateSessionAsync(pool, openStartTickCount, ioBehavior, createSessionActivity, cancellationToken).ConfigureAwait(false);
+					CopyActivityTags(m_session, activity);
 
-				m_hasBeenOpened = true;
-				SetState(ConnectionState.Open);
-			}
-			catch (OperationCanceledException)
-			{
-				SetState(ConnectionState.Closed);
-				throw;
-			}
-			catch (MySqlException)
-			{
-				SetState(ConnectionState.Closed);
-				cancellationToken.ThrowIfCancellationRequested();
-				throw;
-			}
-			catch (SocketException)
-			{
-				SetState(ConnectionState.Closed);
-				throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Unable to connect to any of the specified MySQL hosts.");
+					m_hasBeenOpened = true;
+					SetState(ConnectionState.Open);
+				}
+				catch (OperationCanceledException)
+				{
+					SetState(ConnectionState.Closed);
+					throw;
+				}
+				catch (MySqlException)
+				{
+					SetState(ConnectionState.Closed);
+					cancellationToken.ThrowIfCancellationRequested();
+					throw;
+				}
+				catch (SocketException)
+				{
+					SetState(ConnectionState.Closed);
+					throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Unable to connect to any of the specified MySQL hosts.");
+				}
 			}
 
 			if (m_connectionSettings.AutoEnlist && System.Transactions.Transaction.Current is not null)
@@ -895,7 +901,8 @@ public sealed class MySqlConnection : DbConnection, ICloneable
 		}
 	}
 
-	private async ValueTask<ServerSession> CreateSessionAsync(ConnectionPool? pool, int startTickCount, IOBehavior? ioBehavior, CancellationToken cancellationToken)
+	private async ValueTask<ServerSession> CreateSessionAsync(ConnectionPool? pool, int startTickCount,
+		IOBehavior? ioBehavior, Activity? createSessionActivity, CancellationToken cancellationToken)
 	{
 		var connectionSettings = GetInitializedConnectionSettings();
 		var actualIOBehavior = ioBehavior ?? (connectionSettings.ForceSynchronous ? IOBehavior.Synchronous : IOBehavior.Asynchronous);
@@ -907,7 +914,11 @@ public sealed class MySqlConnection : DbConnection, ICloneable
 			// the cancellation token for connection is controlled by 'cancellationToken' (if it can be cancelled), ConnectionTimeout
 			// (from the connection string, if non-zero), or a combination of both
 			if (connectionSettings.ConnectionTimeout != 0)
-				timeoutSource = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(1, connectionSettings.ConnectionTimeoutMilliseconds - unchecked(Environment.TickCount - startTickCount))));
+			{
+				var fromMilliseconds = TimeSpan.FromMilliseconds(Math.Max(1, connectionSettings.ConnectionTimeoutMilliseconds - unchecked(Environment.TickCount - startTickCount)));
+				createSessionActivity?.AddTag("Timeout source milliseconds", fromMilliseconds);
+				timeoutSource = new CancellationTokenSource(fromMilliseconds);
+			}
 			if (cancellationToken.CanBeCanceled && timeoutSource is not null)
 				linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);
 			var connectToken = linkedSource?.Token ?? timeoutSource?.Token ?? cancellationToken;
@@ -931,10 +942,10 @@ public sealed class MySqlConnection : DbConnection, ICloneable
 				return session;
 			}
 		}
-		catch (OperationCanceledException) when (timeoutSource?.IsCancellationRequested ?? false)
+		catch (OperationCanceledException oex) when (timeoutSource?.IsCancellationRequested ?? false)
 		{
 			var messageSuffix = (pool?.IsEmpty ?? false) ? " All pooled connections are in use." : "";
-			throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Connect Timeout expired." + messageSuffix);
+			throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Connect Timeout expired." + messageSuffix, oex);
 		}
 		catch (MySqlException ex) when ((timeoutSource?.IsCancellationRequested ?? false) || (ex.ErrorCode == MySqlErrorCode.CommandTimeoutExpired))
 		{
