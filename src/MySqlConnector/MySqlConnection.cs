@@ -394,17 +394,14 @@ public sealed class MySqlConnection : DbConnection, ICloneable
 			// check if there is an open session (in the current transaction) that can be adopted
 			if (m_connectionSettings.AutoEnlist && System.Transactions.Transaction.Current is not null)
 			{
-				using (ActivitySourceHelper.StartActivity("FindExistingEnlistedSession"))
+				var existingConnection = FindExistingEnlistedSession(System.Transactions.Transaction.Current);
+				if (existingConnection is not null)
 				{
-					var existingConnection = FindExistingEnlistedSession(System.Transactions.Transaction.Current);
-					if (existingConnection is not null)
-					{
-						TakeSessionFrom(existingConnection);
-						CopyActivityTags(m_session!, activity);
-						m_hasBeenOpened = true;
-						SetState(ConnectionState.Open);
-						return;
-					}
+					TakeSessionFrom(existingConnection);
+					CopyActivityTags(m_session!, activity);
+					m_hasBeenOpened = true;
+					SetState(ConnectionState.Open);
+					return;
 				}
 			}
 

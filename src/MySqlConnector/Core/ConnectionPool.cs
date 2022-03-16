@@ -30,12 +30,15 @@ internal sealed class ConnectionPool
 		if (ConnectionSettings.MinimumPoolSize > 0)
 			await CreateMinimumPooledSessions(connection, ioBehavior, cancellationToken).ConfigureAwait(false);
 
-		// wait for an open slot (until the cancellationToken is cancelled, which is typically due to timeout)
-		Log.Trace("Pool{0} waiting for an available session", m_logArguments);
-		if (ioBehavior == IOBehavior.Asynchronous)
-			await m_sessionSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-		else
-			m_sessionSemaphore.Wait(cancellationToken);
+		using (ActivitySourceHelper.StartActivity("SessionSemaphoreWait"))
+		{
+			// wait for an open slot (until the cancellationToken is cancelled, which is typically due to timeout)
+			Log.Trace("Pool{0} waiting for an available session", m_logArguments);
+			if (ioBehavior == IOBehavior.Asynchronous)
+				await m_sessionSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+			else
+				m_sessionSemaphore.Wait(cancellationToken);
+		}
 
 		ServerSession? session = null;
 		try
