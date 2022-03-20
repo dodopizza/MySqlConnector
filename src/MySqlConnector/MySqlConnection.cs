@@ -405,32 +405,30 @@ public sealed class MySqlConnection : DbConnection, ICloneable
 				}
 			}
 
-			using (var createSessionActivity = ActivitySourceHelper.StartActivity("CreateSessionAsync"))
+			try
 			{
-				try
-				{
-					m_session = await CreateSessionAsync(pool, openStartTickCount, ioBehavior, createSessionActivity, cancellationToken).ConfigureAwait(false);
-					CopyActivityTags(m_session, activity);
+				m_session = await CreateSessionAsync(pool, openStartTickCount, ioBehavior, cancellationToken).ConfigureAwait(false);
+				CopyActivityTags(m_session, activity);
 
-					m_hasBeenOpened = true;
-					SetState(ConnectionState.Open);
-				}
-				catch (OperationCanceledException)
-				{
-					SetState(ConnectionState.Closed);
-					throw;
-				}
-				catch (MySqlException)
-				{
-					SetState(ConnectionState.Closed);
-					cancellationToken.ThrowIfCancellationRequested();
-					throw;
-				}
-				catch (SocketException)
-				{
-					SetState(ConnectionState.Closed);
-					throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Unable to connect to any of the specified MySQL hosts.");
-				}
+				m_hasBeenOpened = true;
+				SetState(ConnectionState.Open);
+			}
+			catch (OperationCanceledException)
+			{
+				SetState(ConnectionState.Closed);
+				throw;
+			}
+			catch (MySqlException e)
+			{
+				SetState(ConnectionState.Closed);
+				activity?.AddEvent(new ActivityEvent($"CreateSessionAsync throws exception: {e.ErrorCode} {e.Message} "));
+				cancellationToken.ThrowIfCancellationRequested();
+				throw;
+			}
+			catch (SocketException)
+			{
+				SetState(ConnectionState.Closed);
+				throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Unable to connect to any of the specified MySQL hosts.");
 			}
 
 			if (m_connectionSettings.AutoEnlist && System.Transactions.Transaction.Current is not null)
@@ -898,8 +896,10 @@ public sealed class MySqlConnection : DbConnection, ICloneable
 		}
 	}
 
-	private async ValueTask<ServerSession> CreateSessionAsync(ConnectionPool? pool, int startTickCount,
-		IOBehavior? ioBehavior, Activity? createSessionActivity, CancellationToken cancellationToken)
+	private async ValueTask<ServerSession> CreateSessionAsync(ConnectionPool? pool,
+		int startTickCount,
+		IOBehavior? ioBehavior,
+		CancellationToken cancellationToken)
 	{
 		var connectionSettings = GetInitializedConnectionSettings();
 		var actualIOBehavior = ioBehavior ?? (connectionSettings.ForceSynchronous ? IOBehavior.Synchronous : IOBehavior.Asynchronous);
@@ -912,9 +912,8 @@ public sealed class MySqlConnection : DbConnection, ICloneable
 			// (from the connection string, if non-zero), or a combination of both
 			if (connectionSettings.ConnectionTimeout != 0)
 			{
-				var fromMilliseconds = TimeSpan.FromMilliseconds(Math.Max(1, connectionSettings.ConnectionTimeoutMilliseconds - unchecked(Environment.TickCount - startTickCount)));
-				createSessionActivity?.AddTag("Timeout source milliseconds", fromMilliseconds);
-				timeoutSource = new CancellationTokenSource(fromMilliseconds);
+				timeoutSource = new CancellationTokenSource(TimeSpan.FromMilliseconds(Math.Max(1,
+					connectionSettings.ConnectionTimeoutMilliseconds - unchecked(Environment.TickCount - startTickCount))));
 			}
 			if (cancellationToken.CanBeCanceled && timeoutSource is not null)
 				linkedSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token);

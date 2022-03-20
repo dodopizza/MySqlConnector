@@ -14,7 +14,10 @@ internal sealed class ConnectionPool
 
 	public SslProtocols SslProtocols { get; set; }
 
-	public async ValueTask<ServerSession> GetSessionAsync(MySqlConnection connection, int startTickCount, IOBehavior ioBehavior, CancellationToken cancellationToken)
+	public async ValueTask<ServerSession> GetSessionAsync(MySqlConnection connection,
+		int startTickCount,
+		IOBehavior ioBehavior,
+		CancellationToken cancellationToken)
 	{
 		cancellationToken.ThrowIfCancellationRequested();
 
@@ -52,59 +55,84 @@ internal sealed class ConnectionPool
 					m_sessions.RemoveFirst();
 				}
 			}
-			if (session is not null)
+
+			using (var useExistingSession = ActivitySourceHelper.StartActivity("UseExistingSession"))
 			{
-				Log.Trace("Pool{0} found an existing session; checking it for validity", m_logArguments);
-				bool reuseSession;
+				if (session is not null)
+				{
+					Log.Trace("Pool{0} found an existing session; checking it for validity", m_logArguments);
+					bool reuseSession;
 
-				if (session.PoolGeneration != m_generation)
-				{
-					Log.Trace("Pool{0} discarding session due to wrong generation", m_logArguments);
-					reuseSession = false;
-				}
-				else
-				{
-					if (ConnectionSettings.ConnectionReset || session.DatabaseOverride is not null)
-						reuseSession = await session.TryResetConnectionAsync(ConnectionSettings, connection, ioBehavior, cancellationToken).ConfigureAwait(false);
-					else
-						reuseSession = true;
-				}
-
-				if (!reuseSession)
-				{
-					// session is either old or cannot communicate with the server
-					Log.Info("Pool{0} Session{1} is unusable; destroying it", m_logArguments[0], session.Id);
-					AdjustHostConnectionCount(session, -1);
-					await session.DisposeAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
-				}
-				else
-				{
-					// pooled session is ready to be used; return it
-					session.OwningConnection = new(connection);
-					int leasedSessionsCountPooled;
-					lock (m_leasedSessions)
+					if (session.PoolGeneration != m_generation)
 					{
-						m_leasedSessions.Add(session.Id, session);
-						leasedSessionsCountPooled = m_leasedSessions.Count;
+						Log.Trace("Pool{0} discarding session due to wrong generation", m_logArguments);
+						reuseSession = false;
 					}
-					if (Log.IsTraceEnabled())
-						Log.Trace("Pool{0} returning pooled Session{1} to caller; LeasedSessionsCount={2}", m_logArguments[0], session.Id, leasedSessionsCountPooled);
-					return session;
+					else
+					{
+						if (ConnectionSettings.ConnectionReset || session.DatabaseOverride is not null)
+						{
+							using (ActivitySourceHelper.StartActivity("TryResetConnection"))
+							{
+								reuseSession = await session
+									.TryResetConnectionAsync(ConnectionSettings, connection, ioBehavior, cancellationToken)
+									.ConfigureAwait(false);
+							}
+						}
+						else
+						{
+							reuseSession = true;
+						}
+					}
+
+					useExistingSession?.AddTag("ReuseSession", reuseSession);
+
+					if (!reuseSession)
+					{
+						// session is either old or cannot communicate with the server
+						Log.Info("Pool{0} Session{1} is unusable; destroying it", m_logArguments[0], session.Id);
+						AdjustHostConnectionCount(session, -1);
+						await session.DisposeAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					}
+					else
+					{
+						// pooled session is ready to be used; return it
+						session.OwningConnection = new(connection);
+						int leasedSessionsCountPooled;
+						lock (m_leasedSessions)
+						{
+							m_leasedSessions.Add(session.Id, session);
+							leasedSessionsCountPooled = m_leasedSessions.Count;
+						}
+
+						if (Log.IsTraceEnabled())
+							Log.Trace("Pool{0} returning pooled Session{1} to caller; LeasedSessionsCount={2}",
+								m_logArguments[0], session.Id, leasedSessionsCountPooled);
+						return session;
+					}
 				}
 			}
 
-			// create a new session
-			session = await ConnectSessionAsync(connection, "Pool{0} no pooled session available; created new Session{1}", startTickCount, ioBehavior, cancellationToken).ConfigureAwait(false);
-			AdjustHostConnectionCount(session, 1);
-			session.OwningConnection = new(connection);
-			int leasedSessionsCountNew;
-			lock (m_leasedSessions)
+			using (ActivitySourceHelper.StartActivity("CreateNewSession"))
 			{
-				m_leasedSessions.Add(session.Id, session);
-				leasedSessionsCountNew = m_leasedSessions.Count;
+				// create a new session
+				session = await ConnectSessionAsync(connection,
+					"Pool{0} no pooled session available; created new Session{1}", startTickCount, ioBehavior,
+					cancellationToken).ConfigureAwait(false);
+				AdjustHostConnectionCount(session, 1);
+				session.OwningConnection = new(connection);
+				int leasedSessionsCountNew;
+				lock (m_leasedSessions)
+				{
+					m_leasedSessions.Add(session.Id, session);
+					leasedSessionsCountNew = m_leasedSessions.Count;
+				}
+
+				if (Log.IsTraceEnabled())
+					Log.Trace("Pool{0} returning new Session{1} to caller; LeasedSessionsCount={2}", m_logArguments[0],
+						session.Id, leasedSessionsCountNew);
 			}
-			if (Log.IsTraceEnabled())
-				Log.Trace("Pool{0} returning new Session{1} to caller; LeasedSessionsCount={2}", m_logArguments[0], session.Id, leasedSessionsCountNew);
+
 			return session;
 		}
 		catch (Exception ex)
@@ -363,7 +391,13 @@ internal sealed class ConnectionPool
 		var session = new ServerSession(this, m_generation, Interlocked.Increment(ref m_lastSessionId));
 		if (Log.IsDebugEnabled())
 			Log.Debug(logMessage, m_logArguments[0], session.Id);
-		var statusInfo = await session.ConnectAsync(ConnectionSettings, connection, startTickCount, m_loadBalancer, ioBehavior, cancellationToken).ConfigureAwait(false);
+		var statusInfo = await session.ConnectAsync(ConnectionSettings,
+					connection,
+					startTickCount,
+					m_loadBalancer,
+					ioBehavior,
+					cancellationToken)
+				.ConfigureAwait(false);
 		Exception? redirectionException = null;
 
 		if (statusInfo is not null && statusInfo.StartsWith("Location: mysql://", StringComparison.Ordinal))
