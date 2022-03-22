@@ -416,7 +416,7 @@ internal sealed class ServerSession
 			var sslProtocols = Pool?.SslProtocols ?? cs.TlsVersions;
 			PayloadData payload;
 			InitialHandshakePayload initialHandshake;
-			using (ActivitySourceHelper.StartActivity("SSLInit"))
+			using (ActivitySourceHelper.StartActivity("OpenConnection"))
 			{
 				do
 				{
@@ -657,23 +657,35 @@ internal sealed class ServerSession
 					Log.Trace("Session{0} ServerVersion={1} supports reset connection and pipelining; sending pipelined reset connection request", m_logArguments);
 
 					// send both packets at once
-					await m_payloadHandler!.ByteHandler.WriteBytesAsync(m_pipelinedResetConnectionBytes!, ioBehavior).ConfigureAwait(false);
+					using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.WriteBytesAsync"))
+					{
+						await m_payloadHandler!.ByteHandler.WriteBytesAsync(m_pipelinedResetConnectionBytes!, ioBehavior).ConfigureAwait(false);
+					}
 
 					// read two OK replies
 					m_payloadHandler.SetNextSequenceNumber(1);
-					payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.ReceiveReplyAsync.ResetConnection"))
+					{
+						payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					}
 					OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
 
 					m_payloadHandler.SetNextSequenceNumber(1);
-					payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.ReceiveReplyAsync.SETNAMESQuery"))
+					{
+						payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					}
 					OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
 
 					return true;
 				}
 
 				Log.Trace("Session{0} ServerVersion={1} supports reset connection; sending reset connection request", m_logArguments);
-				await SendAsync(ResetConnectionPayload.Instance, ioBehavior, cancellationToken).ConfigureAwait(false);
-				payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+				using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.ResetConnectionPayload.Instance"))
+				{
+					await SendAsync(ResetConnectionPayload.Instance, ioBehavior, cancellationToken).ConfigureAwait(false);
+					payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+				}
 				OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
 			}
 			else
@@ -703,10 +715,13 @@ internal sealed class ServerSession
 				OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
 			}
 
-			// set 'collation_connection' to the server default
-			await SendAsync(m_setNamesPayload, ioBehavior, cancellationToken).ConfigureAwait(false);
-			payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
-			OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
+			using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.collation_connection"))
+			{
+				// set 'collation_connection' to the server default
+				await SendAsync(m_setNamesPayload, ioBehavior, cancellationToken).ConfigureAwait(false);
+				payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+				OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
+			}
 
 			return true;
 		}

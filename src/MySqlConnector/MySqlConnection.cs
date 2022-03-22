@@ -941,11 +941,11 @@ public sealed class MySqlConnection : DbConnection, ICloneable
 		catch (OperationCanceledException oex) when (timeoutSource?.IsCancellationRequested ?? false)
 		{
 			var messageSuffix = (pool?.IsEmpty ?? false) ? " All pooled connections are in use." : "";
-			throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Connect Timeout expired." + messageSuffix, oex);
+			throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Connect Timeout expired." + messageSuffix + " Inner: OperationCanceledException", oex);
 		}
 		catch (MySqlException ex) when ((timeoutSource?.IsCancellationRequested ?? false) || (ex.ErrorCode == MySqlErrorCode.CommandTimeoutExpired))
 		{
-			throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Connect Timeout expired.", ex);
+			throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Connect Timeout expired." + $" Inner: {ex.ErrorCode} {ex.Message}", ex);
 		}
 		finally
 		{
