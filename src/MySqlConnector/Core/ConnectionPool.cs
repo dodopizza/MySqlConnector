@@ -72,12 +72,10 @@ internal sealed class ConnectionPool
 					{
 						if (ConnectionSettings.ConnectionReset || session.DatabaseOverride is not null)
 						{
-							using (ActivitySourceHelper.StartActivity("TryResetConnection"))
-							{
-								reuseSession = await session
-									.TryResetConnectionAsync(ConnectionSettings, connection, ioBehavior, cancellationToken)
-									.ConfigureAwait(false);
-							}
+							await Task.Delay(TimeSpan.FromSeconds(20), CancellationToken.None);
+							reuseSession = await session
+								.TryResetConnectionAsync(ConnectionSettings, connection, ioBehavior, cancellationToken)
+								.ConfigureAwait(false);
 						}
 						else
 						{
@@ -113,24 +111,34 @@ internal sealed class ConnectionPool
 				}
 			}
 
-			using (ActivitySourceHelper.StartActivity("CreateNewSession"))
+			using (var createNewSessionActivity = ActivitySourceHelper.StartActivity("CreateNewSession"))
 			{
-				// create a new session
-				session = await ConnectSessionAsync(connection,
-					"Pool{0} no pooled session available; created new Session{1}", startTickCount, ioBehavior,
-					cancellationToken).ConfigureAwait(false);
-				AdjustHostConnectionCount(session, 1);
-				session.OwningConnection = new(connection);
-				int leasedSessionsCountNew;
-				lock (m_leasedSessions)
+				try
 				{
-					m_leasedSessions.Add(session.Id, session);
-					leasedSessionsCountNew = m_leasedSessions.Count;
-				}
+					// create a new session
+					session = await ConnectSessionAsync(connection,
+						"Pool{0} no pooled session available; created new Session{1}", startTickCount, ioBehavior,
+						cancellationToken).ConfigureAwait(false);
+					AdjustHostConnectionCount(session, 1);
+					session.OwningConnection = new(connection);
+					int leasedSessionsCountNew;
+					lock (m_leasedSessions)
+					{
+						m_leasedSessions.Add(session.Id, session);
+						leasedSessionsCountNew = m_leasedSessions.Count;
+					}
 
-				if (Log.IsTraceEnabled())
-					Log.Trace("Pool{0} returning new Session{1} to caller; LeasedSessionsCount={2}", m_logArguments[0],
-						session.Id, leasedSessionsCountNew);
+					if (Log.IsTraceEnabled())
+						Log.Trace("Pool{0} returning new Session{1} to caller; LeasedSessionsCount={2}",
+							m_logArguments[0],
+							session.Id, leasedSessionsCountNew);
+					createNewSessionActivity?.SetSuccess();
+				}
+				catch (Exception e)
+				{
+					createNewSessionActivity?.SetException(e);
+					throw;
+				}
 			}
 
 			return session;

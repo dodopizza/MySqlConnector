@@ -25,22 +25,26 @@ internal sealed class StreamByteHandler : IByteHandler
 
 		ValueTask<int> DoReadBytesSync(Memory<byte> buffer)
 		{
-			m_stream.ReadTimeout = RemainingTimeout == Constants.InfiniteTimeout ? Timeout.Infinite : RemainingTimeout;
-			var startTime = RemainingTimeout == Constants.InfiniteTimeout ? 0 : Environment.TickCount;
-			int bytesRead;
-			try
+			using (var readActivity = ActivitySourceHelper.StartActivity("StreamByteHandler.DoReadBytesSync"))
 			{
-				bytesRead = m_stream.Read(buffer);
+				readActivity?.SetTag("RemainingTimeout", RemainingTimeout);
+				m_stream.ReadTimeout = RemainingTimeout == Constants.InfiniteTimeout ? Timeout.Infinite : RemainingTimeout;
+				var startTime = RemainingTimeout == Constants.InfiniteTimeout ? 0 : Environment.TickCount;
+				int bytesRead;
+				try
+				{
+					bytesRead = m_stream.Read(buffer);
+				}
+				catch (Exception ex)
+				{
+					if (RemainingTimeout != Constants.InfiniteTimeout && ex is IOException { InnerException: SocketException { SocketErrorCode: SocketError.TimedOut } })
+						return ValueTaskExtensions.FromException<int>(MySqlException.CreateForTimeout(ex));
+					return ValueTaskExtensions.FromException<int>(ex);
+				}
+				if (RemainingTimeout != Constants.InfiniteTimeout)
+					RemainingTimeout -= unchecked(Environment.TickCount - startTime);
+				return new ValueTask<int>(bytesRead);
 			}
-			catch (Exception ex)
-			{
-				if (RemainingTimeout != Constants.InfiniteTimeout && ex is IOException { InnerException: SocketException { SocketErrorCode: SocketError.TimedOut } })
-					return ValueTaskExtensions.FromException<int>(MySqlException.CreateForTimeout(ex));
-				return ValueTaskExtensions.FromException<int>(ex);
-			}
-			if (RemainingTimeout != Constants.InfiniteTimeout)
-				RemainingTimeout -= unchecked(Environment.TickCount - startTime);
-			return new ValueTask<int>(bytesRead);
 		}
 
 		ValueTask<int> DoReadBytesSyncOverAsync(Memory<byte> buffer)
@@ -58,30 +62,34 @@ internal sealed class StreamByteHandler : IByteHandler
 
 		async Task<int> DoReadBytesAsync(Memory<byte> buffer)
 		{
-			var startTime = RemainingTimeout == Constants.InfiniteTimeout ? 0 : Environment.TickCount;
-			var timerId = RemainingTimeout == Constants.InfiniteTimeout ? 0 : TimerQueue.Instance.Add(RemainingTimeout, m_closeStream);
-			int bytesRead;
-			try
+			using (var readActivity = ActivitySourceHelper.StartActivity("StreamByteHandler.DoReadBytesAsync"))
 			{
-				bytesRead = await m_stream.ReadAsync(buffer).ConfigureAwait(false);
-			}
-			catch (Exception ex) when (ex is ObjectDisposedException or IOException)
-			{
+				readActivity?.SetTag("RemainingTimeout", RemainingTimeout);
+				var startTime = RemainingTimeout == Constants.InfiniteTimeout ? 0 : Environment.TickCount;
+				var timerId = RemainingTimeout == Constants.InfiniteTimeout ? 0 : TimerQueue.Instance.Add(RemainingTimeout, m_closeStream);
+				int bytesRead;
+				try
+				{
+					bytesRead = await m_stream.ReadAsync(buffer).ConfigureAwait(false);
+				}
+				catch (Exception ex) when (ex is ObjectDisposedException or IOException)
+				{
+					if (RemainingTimeout != Constants.InfiniteTimeout)
+					{
+						RemainingTimeout -= unchecked(Environment.TickCount - startTime);
+						if (!TimerQueue.Instance.Remove(timerId))
+							throw MySqlException.CreateForTimeout(ex);
+					}
+					throw;
+				}
 				if (RemainingTimeout != Constants.InfiniteTimeout)
 				{
 					RemainingTimeout -= unchecked(Environment.TickCount - startTime);
 					if (!TimerQueue.Instance.Remove(timerId))
-						throw MySqlException.CreateForTimeout(ex);
+						throw MySqlException.CreateForTimeout();
 				}
-				throw;
+				return bytesRead;
 			}
-			if (RemainingTimeout != Constants.InfiniteTimeout)
-			{
-				RemainingTimeout -= unchecked(Environment.TickCount - startTime);
-				if (!TimerQueue.Instance.Remove(timerId))
-					throw MySqlException.CreateForTimeout();
-			}
-			return bytesRead;
 		}
 	}
 

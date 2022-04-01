@@ -640,109 +640,140 @@ internal sealed class ServerSession
 
 	public async Task<bool> TryResetConnectionAsync(ConnectionSettings cs, MySqlConnection connection, IOBehavior ioBehavior, CancellationToken cancellationToken)
 	{
-		VerifyState(State.Connected);
-
-		try
+		using (var tryResetConnectionActivity = ActivitySourceHelper.StartActivity("TryResetConnection"))
 		{
-			// clear all prepared statements; resetting the connection will clear them on the server
-			ClearPreparedStatements();
+			VerifyState(State.Connected);
 
-			PayloadData payload;
-			if (DatabaseOverride is null && (ServerVersion.Version.CompareTo(ServerVersions.SupportsResetConnection) >= 0 || ServerVersion.MariaDbVersion?.CompareTo(ServerVersions.MariaDbSupportsResetConnection) >= 0))
+			try
 			{
-				m_logArguments[1] = ServerVersion.OriginalString;
+				// clear all prepared statements; resetting the connection will clear them on the server
+				ClearPreparedStatements();
 
-				if (m_supportsPipelining)
-				{
-					Log.Trace("Session{0} ServerVersion={1} supports reset connection and pipelining; sending pipelined reset connection request", m_logArguments);
-
-					// send both packets at once
-					using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.WriteBytesAsync"))
-					{
-						await m_payloadHandler!.ByteHandler.WriteBytesAsync(m_pipelinedResetConnectionBytes!, ioBehavior).ConfigureAwait(false);
-					}
-
-					// read two OK replies
-					m_payloadHandler.SetNextSequenceNumber(1);
-					using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.ReceiveReplyAsync.ResetConnection"))
-					{
-						payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
-					}
-					OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
-
-					m_payloadHandler.SetNextSequenceNumber(1);
-					using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.ReceiveReplyAsync.SETNAMESQuery"))
-					{
-						payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
-					}
-					OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
-
-					return true;
-				}
-
-				Log.Trace("Session{0} ServerVersion={1} supports reset connection; sending reset connection request", m_logArguments);
-				using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.ResetConnectionPayload.Instance"))
-				{
-					await SendAsync(ResetConnectionPayload.Instance, ioBehavior, cancellationToken).ConfigureAwait(false);
-					payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
-				}
-				OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
-			}
-			else
-			{
-				// optimistically hash the password with the challenge from the initial handshake (supported by MariaDB; doesn't appear to be supported by MySQL)
-				if (DatabaseOverride is null)
+				PayloadData payload;
+				if (DatabaseOverride is null &&
+				    (ServerVersion.Version.CompareTo(ServerVersions.SupportsResetConnection) >= 0 ||
+				     ServerVersion.MariaDbVersion?.CompareTo(ServerVersions.MariaDbSupportsResetConnection) >= 0))
 				{
 					m_logArguments[1] = ServerVersion.OriginalString;
-					Log.Trace("Session{0} ServerVersion={1} doesn't support reset connection; sending change user request", m_logArguments);
+
+					if (m_supportsPipelining)
+					{
+						Log.Trace(
+							"Session{0} ServerVersion={1} supports reset connection and pipelining; sending pipelined reset connection request",
+							m_logArguments);
+
+						// send both packets at once
+						using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.WriteBytesAsync"))
+						{
+							await m_payloadHandler!.ByteHandler
+								.WriteBytesAsync(m_pipelinedResetConnectionBytes!, ioBehavior).ConfigureAwait(false);
+						}
+
+						// read two OK replies
+						m_payloadHandler.SetNextSequenceNumber(1);
+						using (ActivitySourceHelper.StartActivity(
+							       "TryResetConnectionAsync.ReceiveReplyAsync.ResetConnection"))
+						{
+							payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+						}
+
+						OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
+
+						m_payloadHandler.SetNextSequenceNumber(1);
+						using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.ReceiveReplyAsync.SETNAMESQuery"))
+						{
+							payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+						}
+
+						OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
+
+						tryResetConnectionActivity?.SetSuccess();
+
+						return true;
+					}
+
+					Log.Trace(
+						"Session{0} ServerVersion={1} supports reset connection; sending reset connection request",
+						m_logArguments);
+					using (ActivitySourceHelper.StartActivity(
+						       "TryResetConnectionAsync.ResetConnectionPayload.Instance"))
+					{
+						await SendAsync(ResetConnectionPayload.Instance, ioBehavior, cancellationToken)
+							.ConfigureAwait(false);
+						payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					}
+
+					OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
 				}
 				else
 				{
-					m_logArguments[1] = DatabaseOverride;
-					Log.Debug("Session{0} sending change user request due to changed Database={1}", m_logArguments);
-					DatabaseOverride = null;
+					// optimistically hash the password with the challenge from the initial handshake (supported by MariaDB; doesn't appear to be supported by MySQL)
+					if (DatabaseOverride is null)
+					{
+						m_logArguments[1] = ServerVersion.OriginalString;
+						Log.Trace(
+							"Session{0} ServerVersion={1} doesn't support reset connection; sending change user request",
+							m_logArguments);
+					}
+					else
+					{
+						m_logArguments[1] = DatabaseOverride;
+						Log.Debug("Session{0} sending change user request due to changed Database={1}", m_logArguments);
+						DatabaseOverride = null;
+					}
+
+					var password = GetPassword(cs, connection);
+					var hashedPassword = AuthenticationUtility.CreateAuthenticationResponse(AuthPluginData!, password);
+					using (var changeUserPayload = ChangeUserPayload.Create(cs.UserID, hashedPassword, cs.Database,
+						       m_characterSet, m_supportsConnectionAttributes ? cs.ConnectionAttributes : null))
+						await SendAsync(changeUserPayload, ioBehavior, cancellationToken).ConfigureAwait(false);
+					payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					if (payload.HeaderByte == AuthenticationMethodSwitchRequestPayload.Signature)
+					{
+						Log.Trace("Session{0} optimistic reauthentication failed; logging in again", m_logArguments);
+						payload = await SwitchAuthenticationAsync(cs, password, payload, ioBehavior, cancellationToken)
+							.ConfigureAwait(false);
+					}
+
+					OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
 				}
-				var password = GetPassword(cs, connection);
-				var hashedPassword = AuthenticationUtility.CreateAuthenticationResponse(AuthPluginData!, password);
-				using (var changeUserPayload = ChangeUserPayload.Create(cs.UserID, hashedPassword, cs.Database, m_characterSet, m_supportsConnectionAttributes ? cs.ConnectionAttributes : null))
-					await SendAsync(changeUserPayload, ioBehavior, cancellationToken).ConfigureAwait(false);
-				payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
-				if (payload.HeaderByte == AuthenticationMethodSwitchRequestPayload.Signature)
+
+				using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.collation_connection"))
 				{
-					Log.Trace("Session{0} optimistic reauthentication failed; logging in again", m_logArguments);
-					payload = await SwitchAuthenticationAsync(cs, password, payload, ioBehavior, cancellationToken).ConfigureAwait(false);
+					// set 'collation_connection' to the server default
+					await SendAsync(m_setNamesPayload, ioBehavior, cancellationToken).ConfigureAwait(false);
+					payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
 				}
-				OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
-			}
 
-			using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.collation_connection"))
+				tryResetConnectionActivity?.SetSuccess();
+
+				return true;
+			}
+			catch (IOException ex)
 			{
-				// set 'collation_connection' to the server default
-				await SendAsync(m_setNamesPayload, ioBehavior, cancellationToken).ConfigureAwait(false);
-				payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
-				OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
+				tryResetConnectionActivity?.SetException(ex);
+				Log.Trace(ex, "Session{0} ignoring IOException in TryResetConnectionAsync", m_logArguments);
+			}
+			catch (MySqlException ex) when (ex.ErrorCode == MySqlErrorCode.ClientInteractionTimeout)
+			{
+				tryResetConnectionActivity?.SetException(ex);
+				Log.Trace(ex, "Session{0} ignoring ClientInteractionTimeout MySqlException in TryResetConnectionAsync",
+					m_logArguments);
+			}
+			catch (ObjectDisposedException ex)
+			{
+				tryResetConnectionActivity?.SetException(ex);
+				Log.Trace(ex, "Session{0} ignoring ObjectDisposedException in TryResetConnectionAsync", m_logArguments);
+			}
+			catch (SocketException ex)
+			{
+				tryResetConnectionActivity?.SetException(ex);
+				Log.Trace(ex, "Session{0} ignoring SocketException in TryResetConnectionAsync", m_logArguments);
 			}
 
-			return true;
+			return false;
 		}
-		catch (IOException ex)
-		{
-			Log.Trace(ex, "Session{0} ignoring IOException in TryResetConnectionAsync", m_logArguments);
-		}
-		catch (MySqlException ex) when (ex.ErrorCode == MySqlErrorCode.ClientInteractionTimeout)
-		{
-			Log.Trace(ex, "Session{0} ignoring ClientInteractionTimeout MySqlException in TryResetConnectionAsync", m_logArguments);
-		}
-		catch (ObjectDisposedException ex)
-		{
-			Log.Trace(ex, "Session{0} ignoring ObjectDisposedException in TryResetConnectionAsync", m_logArguments);
-		}
-		catch (SocketException ex)
-		{
-			Log.Trace(ex, "Session{0} ignoring SocketException in TryResetConnectionAsync", m_logArguments);
-		}
-
-		return false;
 	}
 
 	private async Task<PayloadData> SwitchAuthenticationAsync(ConnectionSettings cs, string password, PayloadData payload, IOBehavior ioBehavior, CancellationToken cancellationToken)
