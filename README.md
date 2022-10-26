@@ -108,4 +108,4 @@ Development of MySqlConnector is supported by:
 ## Local publish
 
 dotnet pack src/MySqlConnector --configuration Release --output packages /p:Version=2.1.13-with-tracing /p:MinVerSkip=true
-dotnet nuget push <path to new .nupkg file> --source https://nuget.pkg.github.com/dodopizza/index.json --api-key <key> --skip-duplicate
+dotnet nuget push ./packages/*.nupkg --source https://nuget.pkg.github.com/dodopizza/index.json --api-key <key> --skip-duplicate
