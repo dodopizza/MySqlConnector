@@ -281,6 +281,7 @@ internal sealed class ServerSession
 
 	public void StartQuerying(ICancellableCommand command)
 	{
+		using var activity = ActivitySourceHelper.StartActivity("ServerSession.StartQuerying");
 		lock (m_lock)
 		{
 			if (m_state is State.Querying or State.CancelingQuery)
@@ -300,6 +301,7 @@ internal sealed class ServerSession
 
 	public void FinishQuerying()
 	{
+		using var activity = ActivitySourceHelper.StartActivity("ServerSession.FinishQuerying");
 		m_logArguments[1] = m_state;
 		Log.Trace("Session{0} entering FinishQuerying; SessionState={1}", m_logArguments);
 		bool clearConnection = false;
@@ -425,12 +427,15 @@ internal sealed class ServerSession
 					shouldRetrySsl = (sslProtocols == SslProtocols.None || (tls12Supported && tls11or10Supported)) && Utility.IsWindows();
 
 					var connected = false;
-					if (cs.ConnectionProtocol == MySqlConnectionProtocol.Sockets)
-						connected = await OpenTcpSocketAsync(cs, loadBalancer ?? throw new ArgumentNullException(nameof(loadBalancer)), ioBehavior, cancellationToken).ConfigureAwait(false);
-					else if (cs.ConnectionProtocol == MySqlConnectionProtocol.UnixSocket)
-						connected = await OpenUnixSocketAsync(cs, ioBehavior, cancellationToken).ConfigureAwait(false);
-					else if (cs.ConnectionProtocol == MySqlConnectionProtocol.NamedPipe)
-						connected = await OpenNamedPipeAsync(cs, startTickCount, ioBehavior, cancellationToken).ConfigureAwait(false);
+					using (ActivitySourceHelper.StartActivity("ServerSession.Connect.OpenTransport"))
+					{
+						if (cs.ConnectionProtocol == MySqlConnectionProtocol.Sockets)
+							connected = await OpenTcpSocketAsync(cs, loadBalancer ?? throw new ArgumentNullException(nameof(loadBalancer)), ioBehavior, cancellationToken).ConfigureAwait(false);
+						else if (cs.ConnectionProtocol == MySqlConnectionProtocol.UnixSocket)
+							connected = await OpenUnixSocketAsync(cs, ioBehavior, cancellationToken).ConfigureAwait(false);
+						else if (cs.ConnectionProtocol == MySqlConnectionProtocol.NamedPipe)
+							connected = await OpenNamedPipeAsync(cs, startTickCount, ioBehavior, cancellationToken).ConfigureAwait(false);
+					}
 					if (!connected)
 					{
 						lock (m_lock)
@@ -547,14 +552,21 @@ internal sealed class ServerSession
 				cs.ConnectionAttributes = CreateConnectionAttributes(cs.ApplicationName);
 
 			var password = GetPassword(cs, connection);
-			using (var handshakeResponsePayload = HandshakeResponse41Payload.Create(initialHandshake, cs, password, m_useCompression, m_characterSet, m_supportsConnectionAttributes ? cs.ConnectionAttributes : null))
-				await SendReplyAsync(handshakeResponsePayload, ioBehavior, cancellationToken).ConfigureAwait(false);
-			payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+
+			using (ActivitySourceHelper.StartActivity("ServerSession.Connect.HandshakeResponse"))
+			{
+				using (var handshakeResponsePayload = HandshakeResponse41Payload.Create(initialHandshake, cs, password, m_useCompression, m_characterSet, m_supportsConnectionAttributes ? cs.ConnectionAttributes : null))
+					await SendReplyAsync(handshakeResponsePayload, ioBehavior, cancellationToken).ConfigureAwait(false);
+				payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+			}
 
 			// if server doesn't support the authentication fast path, it will send a new challenge
 			if (payload.HeaderByte == AuthenticationMethodSwitchRequestPayload.Signature)
 			{
-				payload = await SwitchAuthenticationAsync(cs, password, payload, ioBehavior, cancellationToken).ConfigureAwait(false);
+				using (ActivitySourceHelper.StartActivity("ServerSession.Connect.SwitchAuthentication"))
+				{
+					payload = await SwitchAuthenticationAsync(cs, password, payload, ioBehavior, cancellationToken).ConfigureAwait(false);
+				}
 			}
 
 			var ok = OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
@@ -572,7 +584,12 @@ internal sealed class ServerSession
 			}
 
 			if (ShouldGetRealServerDetails(cs))
-				await GetRealServerDetailsAsync(ioBehavior, CancellationToken.None).ConfigureAwait(false);
+			{
+				using (ActivitySourceHelper.StartActivity("GetRealServerDetails"))
+				{
+					await GetRealServerDetailsAsync(ioBehavior, CancellationToken.None).ConfigureAwait(false);
+				}
+			}
 
 			m_payloadHandler.ByteHandler.RemainingTimeout = Constants.InfiniteTimeout;
 
@@ -1277,6 +1294,7 @@ internal sealed class ServerSession
 
 	private async Task InitSslAsync(ProtocolCapabilities serverCapabilities, ConnectionSettings cs, MySqlConnection connection, SslProtocols sslProtocols, IOBehavior ioBehavior, CancellationToken cancellationToken)
 	{
+		using var activity = ActivitySourceHelper.StartActivity("ServerSession.InitSsl");
 		Log.Trace("Session{0} initializing TLS connection", m_logArguments);
 		X509CertificateCollection? clientCertificates = null;
 

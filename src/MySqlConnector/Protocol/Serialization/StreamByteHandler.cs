@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Sockets;
 using MySqlConnector.Utilities;
 
@@ -77,6 +78,7 @@ internal sealed class StreamByteHandler : IByteHandler
 					if (!TimerQueue.Instance.Remove(timerId))
 						throw MySqlException.CreateForTimeout(ex);
 				}
+				readActivity?.SetException(ex);
 				throw;
 			}
 			if (RemainingTimeout != Constants.InfiniteTimeout)
@@ -85,6 +87,7 @@ internal sealed class StreamByteHandler : IByteHandler
 				if (!TimerQueue.Instance.Remove(timerId))
 					throw MySqlException.CreateForTimeout();
 			}
+			readActivity?.SetSuccess();
 			return bytesRead;
 		}
 	}
