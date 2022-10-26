@@ -416,129 +416,132 @@ internal sealed class ServerSession
 			var sslProtocols = Pool?.SslProtocols ?? cs.TlsVersions;
 			PayloadData payload;
 			InitialHandshakePayload initialHandshake;
-			do
+			using (ActivitySourceHelper.StartActivity("ServerSession.Connect.OpenConnection"))
 			{
-				bool tls11or10Supported = (sslProtocols & (SslProtocols.Tls | SslProtocols.Tls11)) != SslProtocols.None;
-				bool tls12Supported = (sslProtocols & SslProtocols.Tls12) == SslProtocols.Tls12;
-				shouldRetrySsl = (sslProtocols == SslProtocols.None || (tls12Supported && tls11or10Supported)) && Utility.IsWindows();
-
-				var connected = false;
-				if (cs.ConnectionProtocol == MySqlConnectionProtocol.Sockets)
-					connected = await OpenTcpSocketAsync(cs, loadBalancer ?? throw new ArgumentNullException(nameof(loadBalancer)), ioBehavior, cancellationToken).ConfigureAwait(false);
-				else if (cs.ConnectionProtocol == MySqlConnectionProtocol.UnixSocket)
-					connected = await OpenUnixSocketAsync(cs, ioBehavior, cancellationToken).ConfigureAwait(false);
-				else if (cs.ConnectionProtocol == MySqlConnectionProtocol.NamedPipe)
-					connected = await OpenNamedPipeAsync(cs, startTickCount, ioBehavior, cancellationToken).ConfigureAwait(false);
-				if (!connected)
+				do
 				{
-					lock (m_lock)
-						m_state = State.Failed;
-					Log.Error("Session{0} connecting failed", m_logArguments);
-					throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Unable to connect to any of the specified MySQL hosts.");
-				}
+					bool tls11or10Supported = (sslProtocols & (SslProtocols.Tls | SslProtocols.Tls11)) != SslProtocols.None;
+					bool tls12Supported = (sslProtocols & SslProtocols.Tls12) == SslProtocols.Tls12;
+					shouldRetrySsl = (sslProtocols == SslProtocols.None || (tls12Supported && tls11or10Supported)) && Utility.IsWindows();
 
-				var byteHandler = m_socket is null ? new StreamByteHandler(m_stream!) : (IByteHandler) new SocketByteHandler(m_socket);
-				if (cs.ConnectionTimeout != 0)
-					byteHandler.RemainingTimeout = Math.Max(1, cs.ConnectionTimeoutMilliseconds - unchecked(Environment.TickCount - startTickCount));
-				m_payloadHandler = new StandardPayloadHandler(byteHandler);
-
-				payload = await ReceiveAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
-				initialHandshake = InitialHandshakePayload.Create(payload.Span);
-
-				// if PluginAuth is supported, then use the specified auth plugin; else, fall back to protocol capabilities to determine the auth type to use
-				string authPluginName;
-				if ((initialHandshake.ProtocolCapabilities & ProtocolCapabilities.PluginAuth) != 0)
-					authPluginName = initialHandshake.AuthPluginName!;
-				else
-					authPluginName = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.SecureConnection) == 0 ? "mysql_old_password" : "mysql_native_password";
-				m_logArguments[1] = authPluginName;
-				Log.Trace("Session{0} server sent AuthPluginName={1}", m_logArguments);
-				if (authPluginName != "mysql_native_password" && authPluginName != "sha256_password" && authPluginName != "caching_sha2_password")
-				{
-					Log.Error("Session{0} unsupported authentication method AuthPluginName={1}", m_logArguments);
-					throw new NotSupportedException("Authentication method '{0}' is not supported.".FormatInvariant(initialHandshake.AuthPluginName));
-				}
-
-				ServerVersion = new(initialHandshake.ServerVersion);
-				ConnectionId = initialHandshake.ConnectionId;
-				AuthPluginData = initialHandshake.AuthPluginData;
-				m_useCompression = cs.UseCompression && (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.Compress) != 0;
-				CancellationTimeout = cs.CancellationTimeout;
-
-				m_supportsComMulti = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.MariaDbComMulti) != 0;
-				m_supportsConnectionAttributes = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.ConnectionAttributes) != 0;
-				m_supportsDeprecateEof = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.DeprecateEof) != 0;
-				SupportsQueryAttributes = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.QueryAttributes) != 0;
-				m_supportsSessionTrack = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.SessionTrack) != 0;
-				var serverSupportsSsl = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.Ssl) != 0;
-				m_characterSet = ServerVersion.Version >= ServerVersions.SupportsUtf8Mb4 ? CharacterSet.Utf8Mb4GeneralCaseInsensitive : CharacterSet.Utf8Mb3GeneralCaseInsensitive;
-				m_setNamesPayload = ServerVersion.Version >= ServerVersions.SupportsUtf8Mb4 ?
-					(SupportsQueryAttributes ? s_setNamesUtf8mb4WithAttributesPayload : s_setNamesUtf8mb4NoAttributesPayload) :
-					(SupportsQueryAttributes ? s_setNamesUtf8WithAttributesPayload : s_setNamesUtf8NoAttributesPayload);
-
-				// disable pipelining for RDS MySQL 5.7 (assuming Aurora); otherwise take it from the connection string or default to true
-				if (!cs.Pipelining.HasValue && ServerVersion.Version.Major == 5 && ServerVersion.Version.Minor == 7 && HostName.EndsWith(".rds.amazonaws.com", StringComparison.OrdinalIgnoreCase))
-				{
-					m_logArguments[1] = HostName;
-					Log.Debug("Session{0} auto-detected Aurora 5.7 at '{1}'; disabling pipelining", m_logArguments);
-					m_supportsPipelining = false;
-				}
-				else
-				{
-					// pipelining is not currently compatible with compression
-					m_supportsPipelining = !cs.UseCompression && (cs.Pipelining ?? true);
-
-					// for pipelining, concatenate reset connection and SET NAMES query into one buffer
-					if (m_supportsPipelining)
+					var connected = false;
+					if (cs.ConnectionProtocol == MySqlConnectionProtocol.Sockets)
+						connected = await OpenTcpSocketAsync(cs, loadBalancer ?? throw new ArgumentNullException(nameof(loadBalancer)), ioBehavior, cancellationToken).ConfigureAwait(false);
+					else if (cs.ConnectionProtocol == MySqlConnectionProtocol.UnixSocket)
+						connected = await OpenUnixSocketAsync(cs, ioBehavior, cancellationToken).ConfigureAwait(false);
+					else if (cs.ConnectionProtocol == MySqlConnectionProtocol.NamedPipe)
+						connected = await OpenNamedPipeAsync(cs, startTickCount, ioBehavior, cancellationToken).ConfigureAwait(false);
+					if (!connected)
 					{
-						m_pipelinedResetConnectionBytes = new byte[m_setNamesPayload.Span.Length + 9];
-
-						// first packet: reset connection
-						m_pipelinedResetConnectionBytes[0] = 1;
-						m_pipelinedResetConnectionBytes[4] = (byte) CommandKind.ResetConnection;
-
-						// second packet: SET NAMES query
-						m_pipelinedResetConnectionBytes[5] = (byte) m_setNamesPayload.Span.Length;
-						m_setNamesPayload.Span.CopyTo(m_pipelinedResetConnectionBytes.AsSpan().Slice(9));
-					}
-				}
-
-				Log.Debug("Session{0} made connection; ServerVersion={1}; ConnectionId={2}; Compression={3}; Attributes={4}; DeprecateEof={5}; Ssl={6}; SessionTrack={7}; Pipelining={8}; QueryAttributes={9}",
-					m_logArguments[0], ServerVersion.OriginalString, ConnectionId,
-					m_useCompression, m_supportsConnectionAttributes, m_supportsDeprecateEof, serverSupportsSsl, m_supportsSessionTrack, m_supportsPipelining, SupportsQueryAttributes);
-
-				if (cs.SslMode != MySqlSslMode.None && (cs.SslMode != MySqlSslMode.Preferred || serverSupportsSsl))
-				{
-					if (!serverSupportsSsl)
-					{
-						Log.Error("Session{0} requires SSL but server doesn't support it", m_logArguments);
-						throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Server does not support SSL");
+						lock (m_lock)
+							m_state = State.Failed;
+						Log.Error("Session{0} connecting failed", m_logArguments);
+						throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Unable to connect to any of the specified MySQL hosts.");
 					}
 
-					try
+					var byteHandler = m_socket is null ? new StreamByteHandler(m_stream!) : (IByteHandler) new SocketByteHandler(m_socket);
+					if (cs.ConnectionTimeout != 0)
+						byteHandler.RemainingTimeout = Math.Max(1, cs.ConnectionTimeoutMilliseconds - unchecked(Environment.TickCount - startTickCount));
+					m_payloadHandler = new StandardPayloadHandler(byteHandler);
+
+					payload = await ReceiveAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					initialHandshake = InitialHandshakePayload.Create(payload.Span);
+
+					// if PluginAuth is supported, then use the specified auth plugin; else, fall back to protocol capabilities to determine the auth type to use
+					string authPluginName;
+					if ((initialHandshake.ProtocolCapabilities & ProtocolCapabilities.PluginAuth) != 0)
+						authPluginName = initialHandshake.AuthPluginName!;
+					else
+						authPluginName = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.SecureConnection) == 0 ? "mysql_old_password" : "mysql_native_password";
+					m_logArguments[1] = authPluginName;
+					Log.Trace("Session{0} server sent AuthPluginName={1}", m_logArguments);
+					if (authPluginName != "mysql_native_password" && authPluginName != "sha256_password" && authPluginName != "caching_sha2_password")
 					{
-						await InitSslAsync(initialHandshake.ProtocolCapabilities, cs, connection, sslProtocols, ioBehavior, cancellationToken).ConfigureAwait(false);
+						Log.Error("Session{0} unsupported authentication method AuthPluginName={1}", m_logArguments);
+						throw new NotSupportedException("Authentication method '{0}' is not supported.".FormatInvariant(initialHandshake.AuthPluginName));
+					}
+
+					ServerVersion = new(initialHandshake.ServerVersion);
+					ConnectionId = initialHandshake.ConnectionId;
+					AuthPluginData = initialHandshake.AuthPluginData;
+					m_useCompression = cs.UseCompression && (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.Compress) != 0;
+					CancellationTimeout = cs.CancellationTimeout;
+
+					m_supportsComMulti = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.MariaDbComMulti) != 0;
+					m_supportsConnectionAttributes = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.ConnectionAttributes) != 0;
+					m_supportsDeprecateEof = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.DeprecateEof) != 0;
+					SupportsQueryAttributes = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.QueryAttributes) != 0;
+					m_supportsSessionTrack = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.SessionTrack) != 0;
+					var serverSupportsSsl = (initialHandshake.ProtocolCapabilities & ProtocolCapabilities.Ssl) != 0;
+					m_characterSet = ServerVersion.Version >= ServerVersions.SupportsUtf8Mb4 ? CharacterSet.Utf8Mb4GeneralCaseInsensitive : CharacterSet.Utf8Mb3GeneralCaseInsensitive;
+					m_setNamesPayload = ServerVersion.Version >= ServerVersions.SupportsUtf8Mb4 ?
+						(SupportsQueryAttributes ? s_setNamesUtf8mb4WithAttributesPayload : s_setNamesUtf8mb4NoAttributesPayload) :
+						(SupportsQueryAttributes ? s_setNamesUtf8WithAttributesPayload : s_setNamesUtf8NoAttributesPayload);
+
+					// disable pipelining for RDS MySQL 5.7 (assuming Aurora); otherwise take it from the connection string or default to true
+					if (!cs.Pipelining.HasValue && ServerVersion.Version.Major == 5 && ServerVersion.Version.Minor == 7 && HostName.EndsWith(".rds.amazonaws.com", StringComparison.OrdinalIgnoreCase))
+					{
+						m_logArguments[1] = HostName;
+						Log.Debug("Session{0} auto-detected Aurora 5.7 at '{1}'; disabling pipelining", m_logArguments);
+						m_supportsPipelining = false;
+					}
+					else
+					{
+						// pipelining is not currently compatible with compression
+						m_supportsPipelining = !cs.UseCompression && (cs.Pipelining ?? true);
+
+						// for pipelining, concatenate reset connection and SET NAMES query into one buffer
+						if (m_supportsPipelining)
+						{
+							m_pipelinedResetConnectionBytes = new byte[m_setNamesPayload.Span.Length + 9];
+
+							// first packet: reset connection
+							m_pipelinedResetConnectionBytes[0] = 1;
+							m_pipelinedResetConnectionBytes[4] = (byte) CommandKind.ResetConnection;
+
+							// second packet: SET NAMES query
+							m_pipelinedResetConnectionBytes[5] = (byte) m_setNamesPayload.Span.Length;
+							m_setNamesPayload.Span.CopyTo(m_pipelinedResetConnectionBytes.AsSpan().Slice(9));
+						}
+					}
+
+					Log.Debug("Session{0} made connection; ServerVersion={1}; ConnectionId={2}; Compression={3}; Attributes={4}; DeprecateEof={5}; Ssl={6}; SessionTrack={7}; Pipelining={8}; QueryAttributes={9}",
+						m_logArguments[0], ServerVersion.OriginalString, ConnectionId,
+						m_useCompression, m_supportsConnectionAttributes, m_supportsDeprecateEof, serverSupportsSsl, m_supportsSessionTrack, m_supportsPipelining, SupportsQueryAttributes);
+
+					if (cs.SslMode != MySqlSslMode.None && (cs.SslMode != MySqlSslMode.Preferred || serverSupportsSsl))
+					{
+						if (!serverSupportsSsl)
+						{
+							Log.Error("Session{0} requires SSL but server doesn't support it", m_logArguments);
+							throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Server does not support SSL");
+						}
+
+						try
+						{
+							await InitSslAsync(initialHandshake.ProtocolCapabilities, cs, connection, sslProtocols, ioBehavior, cancellationToken).ConfigureAwait(false);
+							shouldRetrySsl = false;
+						}
+						catch (ArgumentException ex) when (ex.ParamName == "sslProtocolType" && sslProtocols == SslProtocols.None)
+						{
+							Log.Debug(ex, "Session{0} doesn't support SslProtocols.None; falling back to explicitly specifying SslProtocols", m_logArguments);
+							sslProtocols = SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12;
+						}
+						catch (Exception ex) when (shouldRetrySsl && ((ex is MySqlException && ex.InnerException is IOException) || ex is IOException))
+						{
+							// negotiating TLS 1.2 with a yaSSL-based server throws an exception on Windows, see comment at top of method
+							Log.Debug(ex, "Session{0} failed negotiating TLS; falling back to TLS 1.1", m_logArguments);
+							sslProtocols = sslProtocols == SslProtocols.None ? SslProtocols.Tls | SslProtocols.Tls11 : (SslProtocols.Tls | SslProtocols.Tls11) & sslProtocols;
+							if (Pool is not null)
+								Pool.SslProtocols = sslProtocols;
+						}
+					}
+					else
+					{
 						shouldRetrySsl = false;
 					}
-					catch (ArgumentException ex) when (ex.ParamName == "sslProtocolType" && sslProtocols == SslProtocols.None)
-					{
-						Log.Debug(ex, "Session{0} doesn't support SslProtocols.None; falling back to explicitly specifying SslProtocols", m_logArguments);
-						sslProtocols = SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12;
-					}
-					catch (Exception ex) when (shouldRetrySsl && ((ex is MySqlException && ex.InnerException is IOException) || ex is IOException))
-					{
-						// negotiating TLS 1.2 with a yaSSL-based server throws an exception on Windows, see comment at top of method
-						Log.Debug(ex, "Session{0} failed negotiating TLS; falling back to TLS 1.1", m_logArguments);
-						sslProtocols = sslProtocols == SslProtocols.None ? SslProtocols.Tls | SslProtocols.Tls11 : (SslProtocols.Tls | SslProtocols.Tls11) & sslProtocols;
-						if (Pool is not null)
-							Pool.SslProtocols = sslProtocols;
-					}
-				}
-				else
-				{
-					shouldRetrySsl = false;
-				}
-			} while (shouldRetrySsl);
+				} while (shouldRetrySsl);
+			}
 
 			if (m_supportsConnectionAttributes && cs.ConnectionAttributes is null)
 				cs.ConnectionAttributes = CreateConnectionAttributes(cs.ApplicationName);
@@ -560,10 +563,13 @@ internal sealed class ServerSession
 			if (m_useCompression)
 				m_payloadHandler = new CompressedPayloadHandler(m_payloadHandler.ByteHandler);
 
-			// set 'collation_connection' to the server default
-			await SendAsync(m_setNamesPayload, ioBehavior, cancellationToken).ConfigureAwait(false);
-			payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
-			OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
+			using (ActivitySourceHelper.StartActivity("SetCollationConnection"))
+			{
+				// set 'collation_connection' to the server default
+				await SendAsync(m_setNamesPayload, ioBehavior, cancellationToken).ConfigureAwait(false);
+				payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+				OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
+			}
 
 			if (ShouldGetRealServerDetails(cs))
 				await GetRealServerDetailsAsync(ioBehavior, CancellationToken.None).ConfigureAwait(false);
@@ -592,6 +598,7 @@ internal sealed class ServerSession
 
 	public async Task<bool> TryResetConnectionAsync(ConnectionSettings cs, MySqlConnection connection, IOBehavior ioBehavior, CancellationToken cancellationToken)
 	{
+		using var tryResetConnectionActivity = ActivitySourceHelper.StartActivity("TryResetConnection");
 		VerifyState(State.Connected);
 
 		try
@@ -613,19 +620,38 @@ internal sealed class ServerSession
 
 					// read two OK replies
 					m_payloadHandler.SetNextSequenceNumber(1);
-					payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					using (ActivitySourceHelper.StartActivity(
+						       "TryResetConnectionAsync.ReceiveReplyAsync.ResetConnection"))
+					{
+						payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					}
+
 					OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
 
 					m_payloadHandler.SetNextSequenceNumber(1);
-					payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.ReceiveReplyAsync.SETNAMESQuery"))
+					{
+						payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					}
+
 					OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
+
+					tryResetConnectionActivity?.SetSuccess();
 
 					return true;
 				}
 
-				Log.Trace("Session{0} ServerVersion={1} supports reset connection; sending reset connection request", m_logArguments);
-				await SendAsync(ResetConnectionPayload.Instance, ioBehavior, cancellationToken).ConfigureAwait(false);
-				payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+				Log.Trace(
+					"Session{0} ServerVersion={1} supports reset connection; sending reset connection request",
+					m_logArguments);
+				using (ActivitySourceHelper.StartActivity(
+					       "TryResetConnectionAsync.ResetConnectionPayload.Instance"))
+				{
+					await SendAsync(ResetConnectionPayload.Instance, ioBehavior, cancellationToken)
+						.ConfigureAwait(false);
+					payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+				}
+
 				OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
 			}
 			else
@@ -655,27 +681,36 @@ internal sealed class ServerSession
 				OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
 			}
 
-			// set 'collation_connection' to the server default
-			await SendAsync(m_setNamesPayload, ioBehavior, cancellationToken).ConfigureAwait(false);
-			payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
-			OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
+			using (ActivitySourceHelper.StartActivity("TryResetConnectionAsync.collation_connection"))
+			{
+				// set 'collation_connection' to the server default
+				await SendAsync(m_setNamesPayload, ioBehavior, cancellationToken).ConfigureAwait(false);
+				payload = await ReceiveReplyAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+				OkPayload.Create(payload.Span, SupportsDeprecateEof, SupportsSessionTrack);
+			}
+
+			tryResetConnectionActivity?.SetSuccess();
 
 			return true;
 		}
 		catch (IOException ex)
 		{
+			tryResetConnectionActivity?.SetException(ex);
 			Log.Trace(ex, "Session{0} ignoring IOException in TryResetConnectionAsync", m_logArguments);
 		}
 		catch (MySqlException ex) when (ex.ErrorCode == MySqlErrorCode.ClientInteractionTimeout)
 		{
+			tryResetConnectionActivity?.SetException(ex);
 			Log.Trace(ex, "Session{0} ignoring ClientInteractionTimeout MySqlException in TryResetConnectionAsync", m_logArguments);
 		}
 		catch (ObjectDisposedException ex)
 		{
+			tryResetConnectionActivity?.SetException(ex);
 			Log.Trace(ex, "Session{0} ignoring ObjectDisposedException in TryResetConnectionAsync", m_logArguments);
 		}
 		catch (SocketException ex)
 		{
+			tryResetConnectionActivity?.SetException(ex);
 			Log.Trace(ex, "Session{0} ignoring SocketException in TryResetConnectionAsync", m_logArguments);
 		}
 

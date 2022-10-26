@@ -31,6 +31,8 @@ internal sealed class SocketByteHandler : IByteHandler
 
 	private ValueTask<int> DoReadBytesSync(Memory<byte> buffer)
 	{
+		using var readActivity = ActivitySourceHelper.StartActivity("SocketBytesHandler.DoReadBytesSync");
+		readActivity?.SetTag("RemainingTimeout", RemainingTimeout);
 #if !NETCOREAPP2_1_OR_GREATER && !NETSTANDARD2_1_OR_GREATER
 		MemoryMarshal.TryGetArray<byte>(buffer, out var arraySegment);
 #endif
@@ -69,6 +71,8 @@ internal sealed class SocketByteHandler : IByteHandler
 
 	private async ValueTask<int> DoReadBytesAsync(Memory<byte> buffer)
 	{
+		using var readActivity = ActivitySourceHelper.StartActivity("SocketBytesHandler.DoReadBytesAsync");
+		readActivity?.SetTag("RemainingTimeout", RemainingTimeout);
 		var startTime = RemainingTimeout == Constants.InfiniteTimeout ? 0 : Environment.TickCount;
 		var timerId = RemainingTimeout switch
 		{

@@ -25,6 +25,8 @@ internal sealed class StreamByteHandler : IByteHandler
 
 		ValueTask<int> DoReadBytesSync(Memory<byte> buffer)
 		{
+			using var readActivity = ActivitySourceHelper.StartActivity("StreamByteHandler.DoReadBytesSync");
+			readActivity?.SetTag("RemainingTimeout", RemainingTimeout);
 			m_stream.ReadTimeout = RemainingTimeout == Constants.InfiniteTimeout ? Timeout.Infinite : RemainingTimeout;
 			var startTime = RemainingTimeout == Constants.InfiniteTimeout ? 0 : Environment.TickCount;
 			int bytesRead;
@@ -58,6 +60,8 @@ internal sealed class StreamByteHandler : IByteHandler
 
 		async Task<int> DoReadBytesAsync(Memory<byte> buffer)
 		{
+			using var readActivity = ActivitySourceHelper.StartActivity("StreamByteHandler.DoReadBytesAsync");
+			readActivity?.SetTag("RemainingTimeout", RemainingTimeout);
 			var startTime = RemainingTimeout == Constants.InfiniteTimeout ? 0 : Environment.TickCount;
 			var timerId = RemainingTimeout == Constants.InfiniteTimeout ? 0 : TimerQueue.Instance.Add(RemainingTimeout, m_closeStream);
 			int bytesRead;

@@ -104,3 +104,8 @@ Development of MySqlConnector is supported by:
 [![Microsoft Azure](https://upload.wikimedia.org/wikipedia/commons/thumb/f/fa/Microsoft_Azure.svg/75px-Microsoft_Azure.svg.png)](https://azure.microsoft.com/en-us/overview/open-source/)
 
 [Azure Credits for Open Source](https://opensource.microsoft.com/azure-credits)
+
+## Local publish
+
+dotnet pack src/MySqlConnector --configuration Release --output packages /p:Version=2.1.13-with-tracing /p:MinVerSkip=true
+dotnet nuget push <path to new .nupkg file> --source https://nuget.pkg.github.com/dodopizza/index.json --api-key <key> --skip-duplicate

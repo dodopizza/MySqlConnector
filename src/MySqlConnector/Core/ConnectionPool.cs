@@ -30,12 +30,15 @@ internal sealed class ConnectionPool
 		if (ConnectionSettings.MinimumPoolSize > 0)
 			await CreateMinimumPooledSessions(connection, ioBehavior, cancellationToken).ConfigureAwait(false);
 
-		// wait for an open slot (until the cancellationToken is cancelled, which is typically due to timeout)
-		Log.Trace("Pool{0} waiting for an available session", m_logArguments);
-		if (ioBehavior == IOBehavior.Asynchronous)
-			await m_sessionSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
-		else
-			m_sessionSemaphore.Wait(cancellationToken);
+		using (ActivitySourceHelper.StartActivity("SessionSemaphoreWait"))
+		{
+			// wait for an open slot (until the cancellationToken is cancelled, which is typically due to timeout)
+			Log.Trace("Pool{0} waiting for an available session", m_logArguments);
+			if (ioBehavior == IOBehavior.Asynchronous)
+				await m_sessionSemaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+			else
+				m_sessionSemaphore.Wait(cancellationToken);
+		}
 
 		ServerSession? session = null;
 		try
@@ -49,59 +52,80 @@ internal sealed class ConnectionPool
 					m_sessions.RemoveFirst();
 				}
 			}
-			if (session is not null)
+
+			using (var useExistingSession = ActivitySourceHelper.StartActivity("UseExistingSession"))
 			{
-				Log.Trace("Pool{0} found an existing session; checking it for validity", m_logArguments);
-				bool reuseSession;
+				if (session is not null)
+				{
+					Log.Trace("Pool{0} found an existing session; checking it for validity", m_logArguments);
+					bool reuseSession;
 
-				if (session.PoolGeneration != m_generation)
-				{
-					Log.Trace("Pool{0} discarding session due to wrong generation", m_logArguments);
-					reuseSession = false;
-				}
-				else
-				{
-					if (ConnectionSettings.ConnectionReset || session.DatabaseOverride is not null)
-						reuseSession = await session.TryResetConnectionAsync(ConnectionSettings, connection, ioBehavior, cancellationToken).ConfigureAwait(false);
+					if (session.PoolGeneration != m_generation)
+					{
+						Log.Trace("Pool{0} discarding session due to wrong generation", m_logArguments);
+						reuseSession = false;
+					}
 					else
-						reuseSession = true;
-				}
+					{
+						if (ConnectionSettings.ConnectionReset || session.DatabaseOverride is not null)
+							reuseSession = await session.TryResetConnectionAsync(ConnectionSettings, connection, ioBehavior, cancellationToken).ConfigureAwait(false);
+						else
+							reuseSession = true;
+					}
 
-				if (!reuseSession)
-				{
-					// session is either old or cannot communicate with the server
-					Log.Info("Pool{0} Session{1} is unusable; destroying it", m_logArguments[0], session.Id);
-					AdjustHostConnectionCount(session, -1);
-					await session.DisposeAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					useExistingSession?.AddTag("ReuseSession", reuseSession);
+
+					if (!reuseSession)
+					{
+						// session is either old or cannot communicate with the server
+						Log.Info("Pool{0} Session{1} is unusable; destroying it", m_logArguments[0], session.Id);
+						AdjustHostConnectionCount(session, -1);
+						await session.DisposeAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
+					}
+					else
+					{
+						// pooled session is ready to be used; return it
+						session.OwningConnection = new(connection);
+						int leasedSessionsCountPooled;
+						lock (m_leasedSessions)
+						{
+							m_leasedSessions.Add(session.Id, session);
+							leasedSessionsCountPooled = m_leasedSessions.Count;
+						}
+						if (Log.IsTraceEnabled())
+							Log.Trace("Pool{0} returning pooled Session{1} to caller; LeasedSessionsCount={2}", m_logArguments[0], session.Id, leasedSessionsCountPooled);
+						return session;
+					}
 				}
-				else
+			}
+
+			using (var createNewSessionActivity = ActivitySourceHelper.StartActivity("CreateNewSession"))
+			{
+				try
 				{
-					// pooled session is ready to be used; return it
+					// create a new session
+					session = await ConnectSessionAsync(connection,
+						"Pool{0} no pooled session available; created new Session{1}", startTickCount, ioBehavior,
+						cancellationToken).ConfigureAwait(false);
+					AdjustHostConnectionCount(session, 1);
 					session.OwningConnection = new(connection);
-					int leasedSessionsCountPooled;
+					int leasedSessionsCountNew;
 					lock (m_leasedSessions)
 					{
 						m_leasedSessions.Add(session.Id, session);
-						leasedSessionsCountPooled = m_leasedSessions.Count;
+						leasedSessionsCountNew = m_leasedSessions.Count;
 					}
 					if (Log.IsTraceEnabled())
-						Log.Trace("Pool{0} returning pooled Session{1} to caller; LeasedSessionsCount={2}", m_logArguments[0], session.Id, leasedSessionsCountPooled);
-					return session;
+						Log.Trace("Pool{0} returning new Session{1} to caller; LeasedSessionsCount={2}", m_logArguments[0], session.Id, leasedSessionsCountNew);
+					createNewSessionActivity?.SetSuccess();
+				}
+				catch (Exception e)
+				{
+					createNewSessionActivity?.SetException(e);
+					throw;
 				}
 			}
 
-			// create a new session
-			session = await ConnectSessionAsync(connection, "Pool{0} no pooled session available; created new Session{1}", startTickCount, ioBehavior, cancellationToken).ConfigureAwait(false);
-			AdjustHostConnectionCount(session, 1);
-			session.OwningConnection = new(connection);
-			int leasedSessionsCountNew;
-			lock (m_leasedSessions)
-			{
-				m_leasedSessions.Add(session.Id, session);
-				leasedSessionsCountNew = m_leasedSessions.Count;
-			}
-			if (Log.IsTraceEnabled())
-				Log.Trace("Pool{0} returning new Session{1} to caller; LeasedSessionsCount={2}", m_logArguments[0], session.Id, leasedSessionsCountNew);
 			return session;
 		}
 		catch (Exception ex)
