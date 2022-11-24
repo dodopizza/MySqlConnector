@@ -25,14 +25,27 @@ public sealed class MySqlTransaction : DbTransaction
 	public Task CommitAsync(CancellationToken cancellationToken = default) => CommitAsync(Connection?.AsyncIOBehavior ?? IOBehavior.Asynchronous, cancellationToken);
 #endif
 
-	private async Task CommitAsync(IOBehavior ioBehavior, CancellationToken cancellationToken)
+	/// <summary>
+	/// Asynchronously commits the database transaction.
+	/// </summary>
+	/// <param name="commitMarkup">Arbitrary markup attribute to be added to commit command</param>
+	/// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
+	/// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
+#if NETCOREAPP3_0_OR_GREATER || NETSTANDARD2_1_OR_GREATER
+	public override Task CommitAsync(string commitMarkup, CancellationToken cancellationToken = default) => CommitAsync(Connection?.AsyncIOBehavior ?? IOBehavior.Asynchronous, cancellationToken);
+#else
+	public Task CommitAsync(string commitMarkup, CancellationToken cancellationToken = default) => CommitAsync(Connection?.AsyncIOBehavior ?? IOBehavior.Asynchronous, cancellationToken, commitMarkup);
+#endif
+
+	private async Task CommitAsync(IOBehavior ioBehavior, CancellationToken cancellationToken, string? commitMarkup = default)
 	{
 		VerifyValid();
 
 		using var activity = Connection!.Session.StartActivity("Commit");
 		try
 		{
-			using (var cmd = new MySqlCommand("commit", Connection, this) { NoActivity = true })
+			var commandPrefix = commitMarkup != null ? $"/* {commitMarkup} */" : "";
+			using (var cmd = new MySqlCommand(commandPrefix + "commit", Connection, this) { NoActivity = true })
 				await cmd.ExecuteNonQueryAsync(ioBehavior, cancellationToken).ConfigureAwait(false);
 			Connection!.CurrentTransaction = null;
 			Connection = null;
