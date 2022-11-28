@@ -21,5 +21,12 @@ jobs:
           --version-suffix "${{ github.ref_name }}"
           /p:MinVerSkip=true
 
+      - name: Publish
+        run: >
+          dotnet nuget push .\packages\*.nupkg
+          --source ${{ secrets.NUGET_SOURCE }}
+          --api-key ${{ secrets.GITHUB_TOKEN }}
+          --skip-duplicate
+
       - name: Debug
         run: ls ./packages
