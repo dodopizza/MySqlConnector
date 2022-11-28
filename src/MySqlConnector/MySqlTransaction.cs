@@ -31,11 +31,7 @@ public sealed class MySqlTransaction : DbTransaction
 	/// <param name="commitMarkup">Arbitrary markup attribute to be added to commit command</param>
 	/// <param name="cancellationToken">A token to cancel the asynchronous operation.</param>
 	/// <returns>A <see cref="Task"/> representing the asynchronous operation.</returns>
-#if NETCOREAPP3_0_OR_GREATER || NETSTANDARD2_1_OR_GREATER
-	public override Task CommitAsync(string commitMarkup, CancellationToken cancellationToken = default) => CommitAsync(Connection?.AsyncIOBehavior ?? IOBehavior.Asynchronous, cancellationToken);
-#else
 	public Task CommitAsync(string commitMarkup, CancellationToken cancellationToken = default) => CommitAsync(Connection?.AsyncIOBehavior ?? IOBehavior.Asynchronous, cancellationToken, commitMarkup);
-#endif
 
 	private async Task CommitAsync(IOBehavior ioBehavior, CancellationToken cancellationToken, string? commitMarkup = default)
 	{
