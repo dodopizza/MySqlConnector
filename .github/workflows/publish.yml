@@ -2,7 +2,8 @@ name: Publish
 
 on:
   workflow_dispatch:
-  push:
+    inputs:
+      version
 
 jobs:
   publish:
@@ -17,8 +18,9 @@ jobs:
         run: >
           dotnet pack src/MySqlConnector
           --configuration Release
-          --output output/packages
-          /p:Version=2.2.1-test /p:MinVerSkip=true
+          --output packages
+          --version-suffix "${{ github.ref_name }}"
+          /p:MinVerSkip=true
 
       - name: Debug
-        run: ls ./output/packages
+        run: ls ./packages
