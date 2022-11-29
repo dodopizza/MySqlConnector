@@ -24,6 +24,6 @@ jobs:
       - name: Publish
         run: >
           dotnet nuget push .\packages\*.nupkg
-          --source ${{ secrets.NUGET_SOURCE }}
+          --source https://nuget.pkg.github.com/dodopizza/index.json
           --api-key ${{ secrets.GITHUB_TOKEN }}
           --skip-duplicate
