@@ -18,7 +18,7 @@ jobs:
           dotnet pack src/MySqlConnector
           --configuration Release
           --output packages
-          --version-suffix "${{ github.ref_name }}"
+          --version-suffix "${{ github.ref_name }}.1"
           /p:MinVerSkip=true
 
       - name: Publish
