@@ -23,7 +23,7 @@ jobs:
 
       - name: Publish
         run: >
-          dotnet nuget push .\packages\*.nupkg
+          dotnet nuget push ./packages/*.nupkg
           --source https://nuget.pkg.github.com/dodopizza/index.json
           --api-key ${{ secrets.GITHUB_TOKEN }}
           --skip-duplicate
