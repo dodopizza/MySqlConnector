@@ -1,7 +1,6 @@
 name: "Publish"
 
 on:
-  workflow_dispatch:
   push:
 
 jobs:
@@ -10,20 +9,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-
-      - name: Pack
+      - name: Generate pack command
         run: >
-          dotnet pack src/MySqlConnector
-          --configuration Release
-          --output packages
-          --version-suffix "${{ github.ref_name }}.1"
-          /p:MinVerSkip=true
+          echo 'dotnet pack src/MySqlConnector --configuration Release --output packages --version-suffix "${{ github.ref_name }}.${{ github.run_number }}" /p:MinVerSkip=true'
 
-      - name: Publish
-        run: >
-          dotnet nuget push ./packages/*.nupkg
-          --source https://nuget.pkg.github.com/dodopizza/index.json
-          --api-key ${{ secrets.GITHUB_TOKEN }}
-          --skip-duplicate
+      - name: Generate publish command
+        run: echo 'dotnet nuget push ./packages/*.nupkg --source https://nuget.pkg.github.com/dodopizza/index.json --skip-duplicate'
