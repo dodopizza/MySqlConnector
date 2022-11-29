@@ -11,14 +11,12 @@ jobs:
     steps:
       - name: Generate publish commands
         run: |
-          echo '### Run this commands
-          test
-          test'
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo 'dotnet pack src/MySqlConnector --configuration Release --output ./packages --version-suffix "${{ github.ref_name }}.${{ github.run_number }}" /p:MinVerSkip=true' >> $GITHUB_STEP_SUMMARY
           echo 'dotnet nuget push ./packages/*.nupkg --source https://nuget.pkg.github.com/dodopizza/index.json --skip-duplicate' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo 'If you do not have PAT with packages:write permissions in Nuget.confg:' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+          echo 'dotnet pack src/MySqlConnector --configuration Release --output ./packages --version-suffix "${{ github.ref_name }}.${{ github.run_number }}" /p:MinVerSkip=true' >> $GITHUB_STEP_SUMMARY
           echo 'dotnet nuget push ./packages/*.nupkg --source https://nuget.pkg.github.com/dodopizza/index.json --api-key <api-key> --skip-duplicate' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
