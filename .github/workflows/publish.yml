@@ -27,6 +27,3 @@ jobs:
           --source ${{ secrets.NUGET_SOURCE }}
           --api-key ${{ secrets.GITHUB_TOKEN }}
           --skip-duplicate
-
-      - name: Debug
-        run: ls ./packages
