@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using System.Net;
 using System.Security.Authentication;
 using MySqlConnector.Logging;
@@ -245,22 +246,35 @@ internal sealed class ConnectionPool : IDisposable
 	/// </summary>
 	private async Task RecoverLeakedSessionsAsync(IOBehavior ioBehavior)
 	{
-		var recoveredSessions = new List<ServerSession>();
+		var recoveredSessions = new List<(ServerSession Session, MySqlConnection Connection)>();
 		lock (m_leasedSessions)
 		{
 			m_lastRecoveryTime = unchecked((uint) Environment.TickCount);
 			foreach (var session in m_leasedSessions.Values)
 			{
 				if (!session.OwningConnection!.TryGetTarget(out var _))
-					recoveredSessions.Add(session);
+				{
+					// create a dummy MySqlConnection so that any thread running RecoverLeakedSessionsAsync doesn't process this one
+					var connection = new MySqlConnection();
+					session.OwningConnection = new(connection);
+					recoveredSessions.Add((session, connection));
+				}
 			}
 		}
 		if (recoveredSessions.Count == 0)
 			Log.Trace("Pool{0} recovered no sessions", m_logArguments);
 		else
 			Log.Warn("Pool{0}: RecoveredSessionCount={1}", m_logArguments[0], recoveredSessions.Count);
-		foreach (var session in recoveredSessions)
+
+		foreach (var (session, connection) in recoveredSessions)
+		{
+			// bypass MySqlConnection.Dispose(Async), because it's a dummy MySqlConnection that's not set up
+			// properly, and simply return the session to the pool directly
 			await session.ReturnToPoolAsync(ioBehavior, null).ConfigureAwait(false);
+
+			// be explicit about keeping the associated MySqlConnection alive until the session has been returned
+			GC.KeepAlive(connection);
+		}
 	}
 
 	private async Task CleanPoolAsync(IOBehavior ioBehavior, Func<ServerSession, bool> shouldCleanFn, bool respectMinPoolSize, CancellationToken cancellationToken)
@@ -383,9 +397,18 @@ internal sealed class ConnectionPool : IDisposable
 		var session = new ServerSession(this, m_generation, Interlocked.Increment(ref m_lastSessionId));
 		if (Log.IsDebugEnabled())
 			Log.Debug(logMessage, m_logArguments[0], session.Id);
-		var statusInfo = await session.ConnectAsync(ConnectionSettings, connection, startTickCount, m_loadBalancer, activity, ioBehavior, cancellationToken).ConfigureAwait(false);
-		Exception? redirectionException = null;
+		string? statusInfo;
+		try
+		{
+			statusInfo = await session.ConnectAsync(ConnectionSettings, connection, startTickCount, m_loadBalancer, activity, ioBehavior, cancellationToken).ConfigureAwait(false);
+		}
+		catch (Exception)
+		{
+			await session.DisposeAsync(ioBehavior, default).ConfigureAwait(false);
+			throw;
+		}
 
+		Exception? redirectionException = null;
 		if (statusInfo is not null && statusInfo.StartsWith("Location: mysql://", StringComparison.Ordinal))
 		{
 			// server redirection string has the format "Location: mysql://{host}:{port}/user={userId}[&ttl={ttl}]"
@@ -560,7 +583,7 @@ internal sealed class ConnectionPool : IDisposable
 			(ILoadBalancer) new RoundRobinLoadBalancer();
 
 		Id = Interlocked.Increment(ref s_poolId);
-		m_logArguments = new object[] { "{0}".FormatInvariant(Id) };
+		m_logArguments = new object[] { Id.ToString(CultureInfo.InvariantCulture) };
 		if (Log.IsInfoEnabled())
 			Log.Info("Pool{0} creating new connection pool for ConnectionString: {1}", m_logArguments[0], cs.ConnectionStringBuilder.GetConnectionString(includePassword: false));
 	}
