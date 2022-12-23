@@ -1,5 +1,5 @@
 ---
-lastmod: 2022-11-20
+lastmod: 2022-12-18
 date: 2017-03-27
 menu:
   main:
@@ -9,6 +9,21 @@ weight: 30
 ---
 
 # Version History
+
+### 2.2.3
+
+* Avoid renormalizing parameter names when executing a prepared command: [#1252](https://github.com/mysql-net/MySqlConnector/pull/1252).
+* Fix "Unknown column SRS_ID" error in `GetSchema`: [#1258](https://github.com/mysql-net/MySqlConnector/issues/1258).
+* Use a standardized value for the `TableName` property of the `DataTable` returned from `GetSchema`.
+* Minor performance improvements.
+  * Remove `FormatInvariant` internal helper method: [#1253](https://github.com/mysql-net/MySqlConnector/pull/1253).
+  * Eliminate temporary byte array when getting real server version.
+* Thanks to [Yoshifumi Kawai](https://github.com/neuecc) for contributions to this release.
+
+### 2.2.2
+
+* Fix memory leak when initializing a TLS connection: [#1247](https://github.com/mysql-net/MySqlConnector/issues/1247).
+* Fix failure to dispose objects if an exception is thrown when connecting: [#1248](https://github.com/mysql-net/MySqlConnector/issues/1248).
 
 ### 2.2.1
 

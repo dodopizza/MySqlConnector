@@ -39,7 +39,7 @@ internal sealed class ServerSession
 		Pool = pool;
 		PoolGeneration = poolGeneration;
 		HostName = "";
-		m_logArguments = new object?[] { "{0}".FormatInvariant(Id), null };
+		m_logArguments = new object?[] { Id.ToString(CultureInfo.InvariantCulture), null };
 		m_activityTags = new ActivityTagsCollection();
 		Log.Trace("Session{0} created new session", m_logArguments);
 	}
@@ -149,7 +149,7 @@ internal sealed class ServerSession
 			if (cachedProcedure is null)
 			{
 				var name = NormalizedSchema.MustNormalize(command.CommandText!, command.Connection.Database);
-				throw new MySqlException("Procedure or function '{0}' cannot be found in database '{1}'.".FormatInvariant(name.Component, name.Schema));
+				throw new MySqlException($"Procedure or function '{name.Component}' cannot be found in database '{name.Schema}'.");
 			}
 
 			var parameterCount = cachedProcedure.Parameters.Count;
@@ -467,7 +467,7 @@ internal sealed class ServerSession
 				if (authPluginName != "mysql_native_password" && authPluginName != "sha256_password" && authPluginName != "caching_sha2_password")
 				{
 					Log.Error("Session{0} unsupported authentication method AuthPluginName={1}", m_logArguments);
-					throw new NotSupportedException("Authentication method '{0}' is not supported.".FormatInvariant(initialHandshake.AuthPluginName));
+					throw new NotSupportedException($"Authentication method '{initialHandshake.AuthPluginName}' is not supported.");
 				}
 
 				ServerVersion = new(initialHandshake.ServerVersion);
@@ -714,7 +714,7 @@ internal sealed class ServerSession
 			if (!m_isSecureConnection)
 			{
 				Log.Error("Session{0} needs a secure connection to use AuthenticationMethod '{1}'", m_logArguments);
-				throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Authentication method '{0}' requires a secure connection.".FormatInvariant(switchRequest.Name));
+				throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, $"Authentication method '{switchRequest.Name}' requires a secure connection.");
 			}
 
 			// send the password as a NULL-terminated UTF-8 string
@@ -767,7 +767,7 @@ internal sealed class ServerSession
 
 		default:
 			Log.Error("Session{0} is requesting AuthenticationMethod '{1}' which is not supported", m_logArguments);
-			throw new NotSupportedException("Authentication method '{0}' is not supported.".FormatInvariant(switchRequest.Name));
+			throw new NotSupportedException($"Authentication method '{switchRequest.Name}' is not supported.");
 		}
 	}
 
@@ -846,7 +846,7 @@ internal sealed class ServerSession
 			{
 				m_logArguments[1] = cs.ServerRsaPublicKeyFile;
 				Log.Error(ex, "Session{0} couldn't load server's RSA public key from PublicKeyFile '{1}'", m_logArguments);
-				throw new MySqlException("Couldn't load server's RSA public key from '{0}'".FormatInvariant(cs.ServerRsaPublicKeyFile), ex);
+				throw new MySqlException($"Couldn't load server's RSA public key from '{cs.ServerRsaPublicKeyFile}'", ex);
 			}
 		}
 
@@ -862,7 +862,7 @@ internal sealed class ServerSession
 
 		m_logArguments[1] = switchRequestName;
 		Log.Error("Session{0} couldn't use AuthenticationMethod '{1}' because RSA key wasn't specified or couldn't be retrieved", m_logArguments);
-		throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, "Authentication method '{0}' failed. Either use a secure connection, specify the server's RSA public key with ServerRSAPublicKeyFile, or set AllowPublicKeyRetrieval=True.".FormatInvariant(switchRequestName));
+		throw new MySqlException(MySqlErrorCode.UnableToConnectToHost, $"Authentication method '{switchRequestName}' failed. Either use a secure connection, specify the server's RSA public key with ServerRSAPublicKeyFile, or set AllowPublicKeyRetrieval=True.");
 	}
 
 	public async ValueTask<bool> TryPingAsync(bool logInfo, IOBehavior ioBehavior, CancellationToken cancellationToken)
@@ -1329,7 +1329,7 @@ internal sealed class ServerSession
 					{
 						m_logArguments[1] = cs.CertificateThumbprint;
 						Log.Error("Session{0} certificate with Thumbprint={1} not found in store", m_logArguments);
-						throw new MySqlException("Certificate with Thumbprint {0} not found".FormatInvariant(cs.CertificateThumbprint));
+						throw new MySqlException($"Certificate with Thumbprint {cs.CertificateThumbprint} not found");
 					}
 
 					clientCertificates = new(foundCertificates);
@@ -1713,13 +1713,13 @@ internal sealed class ServerSession
 
 			// first (and only) row
 			payload = await ReceiveReplyAsync(ioBehavior, CancellationToken.None).ConfigureAwait(false);
-			static void ReadRow(ReadOnlySpan<byte> span, out int? connectionId, out byte[]? serverVersion)
+			static void ReadRow(ReadOnlySpan<byte> span, out int? connectionId, out ServerVersion? serverVersion)
 			{
 				var reader = new ByteArrayReader(span);
 				var length = reader.ReadLengthEncodedIntegerOrNull();
 				connectionId = (length != -1 && Utf8Parser.TryParse(reader.ReadByteString(length), out int id, out _)) ? id : default(int?);
 				length = reader.ReadLengthEncodedIntegerOrNull();
-				serverVersion = length != -1 ? reader.ReadByteString(length).ToArray() : null;
+				serverVersion = length != -1 ? new ServerVersion(reader.ReadByteString(length)) : default;
 			}
 			ReadRow(payload.Span, out var connectionId, out var serverVersion);
 
@@ -1732,10 +1732,9 @@ internal sealed class ServerSession
 
 			if (connectionId.HasValue && serverVersion is not null)
 			{
-				var newServerVersion = new ServerVersion(serverVersion);
-				Log.Debug("Session{0} changing ConnectionIdOld {1} to ConnectionId {2} and ServerVersionOld {3} to ServerVersion {4}", m_logArguments[0], ConnectionId, connectionId.Value, ServerVersion.OriginalString, newServerVersion.OriginalString);
+				Log.Debug("Session{0} changing ConnectionIdOld {1} to ConnectionId {2} and ServerVersionOld {3} to ServerVersion {4}", m_logArguments[0], ConnectionId, connectionId.Value, ServerVersion.OriginalString, serverVersion.OriginalString);
 				ConnectionId = connectionId.Value;
-				ServerVersion = newServerVersion;
+				ServerVersion = serverVersion;
 			}
 		}
 		catch (MySqlException ex)
@@ -1794,7 +1793,7 @@ internal sealed class ServerSession
 		if (m_state != state)
 		{
 			Log.Error("Session{0} should have SessionStateExpected {1} but was SessionState {2}", m_logArguments[0], state, m_state);
-			throw new InvalidOperationException("Expected state to be {0} but was {1}.".FormatInvariant(state, m_state));
+			throw new InvalidOperationException($"Expected state to be {state} but was {m_state}.");
 		}
 	}
 
@@ -1804,7 +1803,7 @@ internal sealed class ServerSession
 		{
 			Log.Error("Session{0} should have SessionStateExpected {1} or SessionStateExpected2 {2} or SessionStateExpected3 {3} or SessionStateExpected4 {4} or SessionStateExpected5 {5} or SessionStateExpected6 {6} but was SessionState {7}",
 				m_logArguments[0], state1, state2, state3, state4, state5, state6, m_state);
-			throw new InvalidOperationException("Expected state to be ({0}|{1}|{2}|{3}|{4}|{5}) but was {6}.".FormatInvariant(state1, state2, state3, state4, state5, state6, m_state));
+			throw new InvalidOperationException($"Expected state to be ({state1}|{state2}|{state3}|{state4}|{state5}|{state6}) but was {m_state}.");
 		}
 	}
 
