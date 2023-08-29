@@ -13,6 +13,8 @@
     <Nullable>enable</Nullable>
     <CheckEolTargetFramework>false</CheckEolTargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
+    <VersionPrefix>2.2.7</VersionPrefix>
+    <RepositoryUrl>https://github.com/dodopizza/MySqlConnector</RepositoryUrl>
   </PropertyGroup>
 
   <ItemGroup Condition=" '$(TargetFramework)' == 'net461' OR '$(TargetFramework)' == 'net471' ">
