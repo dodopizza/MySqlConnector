@@ -1,0 +1,30 @@
+name: "Publish"
+
+on:
+  pull_request:
+
+jobs:
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Build
+        run: dotnet build
+
+      - name: Generate publish commands
+        run: |
+          echo '### Publish commands' >> $GITHUB_STEP_SUMMARY
+          echo 'Assuming you have PAT with packages:write permissions in Nuget.confg:' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo 'dotnet pack src/MySqlConnector --configuration Release --output packages --version-suffix "${{ github.head_ref }}.${{ github.run_number }}" /p:MinVerSkip=true' >> $GITHUB_STEP_SUMMARY
+          echo 'dotnet nuget push ./packages/*.nupkg --source https://nuget.pkg.github.com/dodopizza/index.json --skip-duplicate' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo 'Otherwise:' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo 'dotnet pack src/MySqlConnector --configuration Release --output packages --version-suffix "${{ github.head_ref }}.${{ github.run_number }}" /p:MinVerSkip=true' >> $GITHUB_STEP_SUMMARY
+          echo 'dotnet nuget push ./packages/*.nupkg --source https://nuget.pkg.github.com/dodopizza/index.json --api-key <api-key> --skip-duplicate' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
